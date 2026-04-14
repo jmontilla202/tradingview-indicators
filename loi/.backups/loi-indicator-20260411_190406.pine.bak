@@ -1,0 +1,196 @@
+//@version=6
+indicator("Key Levels - Modified", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ===== INPUTS =====
+showPD = input.bool(true, "Show Previous Day", group="Display")
+showPW = input.bool(true, "Show Previous Week", group="Display")
+showGlobex = input.bool(true, "Show Globex (Overnight)", group="Display")
+showIB = input.bool(true, "Show Initial Balance (9:30-10:30)", group="Display")
+
+// Colors
+colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
+colorPDL = input.color(color.new(color.green, 0), "PDL Color", group="Colors")
+colorPDO = input.color(color.new(color.blue, 0), "PDO Color", group="Colors")
+colorPDC = input.color(color.new(color.purple, 0), "PDC Color", group="Colors")
+colorPWH = input.color(color.new(color.purple, 0), "PWH Color", group="Colors")
+colorPWL = input.color(color.new(color.purple, 0), "PWL Color", group="Colors")
+colorGlobexH = input.color(color.new(color.gray, 0), "Globex High Color", group="Colors")
+colorGlobexL = input.color(color.new(color.gray, 0), "Globex Low Color", group="Colors")
+colorIBH = input.color(color.new(color.blue, 0), "IB High Color", group="Colors")
+colorIBL = input.color(color.new(color.blue, 0), "IB Low Color", group="Colors")
+
+// ===== TIME VARIABLES (DEFINED ONCE) =====
+hourET = hour(time, "America/New_York")
+minuteET = minute(time, "America/New_York")
+newDay = ta.change(dayofmonth) != 0
+
+// Session definitions
+inRTH = (hourET == 9 and minuteET >= 30) or (hourET > 9 and hourET < 16) or (hourET == 16 and minuteET == 0)
+inIB = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET < 30))
+inGlobex = not inRTH
+
+// ===== CALCULATE PREVIOUS DAY HIGH/LOW/OPEN/CLOSE (RTH ONLY) =====
+var float rthOpen = na
+var float rthHigh = na
+var float rthLow = na
+var float rthClose = na
+var float pdo = na
+var float pdh = na
+var float pdl = na
+var float pdc = na
+
+if newDay and not na(rthHigh)
+    pdo := rthOpen
+    pdh := rthHigh
+    pdl := rthLow
+    pdc := rthClose
+    rthOpen := na
+    rthHigh := na
+    rthLow := na
+    rthClose := na
+
+if inRTH
+    if na(rthOpen)
+        rthOpen := open
+        rthHigh := high
+        rthLow := low
+    else
+        rthHigh := math.max(rthHigh, high)
+        rthLow := math.min(rthLow, low)
+    rthClose := close
+
+// ===== CALCULATE PREVIOUS WEEK HIGH/LOW =====
+pwh = request.security(syminfo.tickerid, "W", high[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+pwl = request.security(syminfo.tickerid, "W", low[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+
+// ===== CALCULATE GLOBEX HIGH/LOW (OVERNIGHT SESSION) =====
+var float globexHigh = na
+var float globexLow = na
+
+// Reset Globex at start of RTH session
+if inRTH and not inRTH[1]
+    globexHigh := na
+    globexLow := na
+
+// Track Globex high/low during Globex session
+if inGlobex
+    if na(globexHigh)
+        globexHigh := high
+        globexLow := low
+    else
+        globexHigh := math.max(globexHigh, high)
+        globexLow := math.min(globexLow, low)
+
+// ===== CALCULATE INITIAL BALANCE (9:30-10:30) =====
+var float ibHigh = na
+var float ibLow = na
+
+// Reset IB at start of RTH session
+if inRTH and not inRTH[1]
+    ibHigh := na
+    ibLow := na
+
+// Track IB high/low during IB period (9:30-10:30)
+if inIB
+    if na(ibHigh)
+        ibHigh := high
+        ibLow := low
+    else
+        ibHigh := math.max(ibHigh, high)
+        ibLow := math.min(ibLow, low)
+
+// ===== PLOT LEVELS AS RAYS =====
+var line linePDH = na
+var line linePDL = na
+var line linePDO = na
+var line linePDC = na
+var line linePWH = na
+var line linePWL = na
+var line lineGlobexH = na
+var line lineGlobexL = na
+var line lineIBH = na
+var line lineIBL = na
+
+if barstate.islast
+    startBar = bar_index - 48
+
+    if showPD and not na(pdh)
+        line.delete(linePDH)
+        linePDH := line.new(startBar, pdh, bar_index, pdh, color=colorPDH, width=2, style=line.style_dashed, extend=extend.none)
+    if showPD and not na(pdl)
+        line.delete(linePDL)
+        linePDL := line.new(startBar, pdl, bar_index, pdl, color=colorPDL, width=2, style=line.style_dashed, extend=extend.none)
+    if showPD and not na(pdo)
+        line.delete(linePDO)
+        linePDO := line.new(startBar, pdo, bar_index, pdo, color=colorPDO, width=2, style=line.style_dashed, extend=extend.none)
+    if showPD and not na(pdc)
+        line.delete(linePDC)
+        linePDC := line.new(startBar, pdc, bar_index, pdc, color=colorPDC, width=2, style=line.style_dashed, extend=extend.none)
+
+    if showPW and not na(pwh)
+        line.delete(linePWH)
+        linePWH := line.new(startBar, pwh, bar_index, pwh, color=colorPWH, width=2, style=line.style_dashed, extend=extend.none)
+    if showPW and not na(pwl)
+        line.delete(linePWL)
+        linePWL := line.new(startBar, pwl, bar_index, pwl, color=colorPWL, width=2, style=line.style_dashed, extend=extend.none)
+
+    if showGlobex and not na(globexHigh)
+        line.delete(lineGlobexH)
+        lineGlobexH := line.new(startBar, globexHigh, bar_index, globexHigh, color=colorGlobexH, width=2, style=line.style_dashed, extend=extend.none)
+    if showGlobex and not na(globexLow)
+        line.delete(lineGlobexL)
+        lineGlobexL := line.new(startBar, globexLow, bar_index, globexLow, color=colorGlobexL, width=2, style=line.style_dashed, extend=extend.none)
+
+    if showIB and not na(ibHigh)
+        line.delete(lineIBH)
+        lineIBH := line.new(startBar, ibHigh, bar_index, ibHigh, color=colorIBH, width=2, style=line.style_dashed, extend=extend.none)
+    if showIB and not na(ibLow)
+        line.delete(lineIBL)
+        lineIBL := line.new(startBar, ibLow, bar_index, ibLow, color=colorIBL, width=2, style=line.style_dashed, extend=extend.none)
+
+// ===== LABELS =====
+var label labelPDH = na
+var label labelPDL = na
+var label labelPDO = na
+var label labelPDC = na
+var label labelPWH = na
+var label labelPWL = na
+var label labelGlobexH = na
+var label labelGlobexL = na
+var label labelIBH = na
+var label labelIBL = na
+
+if barstate.islast
+    if showPD and not na(pdh)
+        label.delete(labelPDH)
+        labelPDH := label.new(bar_index, pdh, "PDH", style=label.style_label_down, color=colorPDH, textcolor=color.white, size=size.normal)
+    if showPD and not na(pdl)
+        label.delete(labelPDL)
+        labelPDL := label.new(bar_index, pdl, "PDL", style=label.style_label_down, color=colorPDL, textcolor=color.white, size=size.normal)
+    if showPD and not na(pdo)
+        label.delete(labelPDO)
+        labelPDO := label.new(bar_index, pdo, "PDO", style=label.style_label_down, color=colorPDO, textcolor=color.white, size=size.normal)
+    if showPD and not na(pdc)
+        label.delete(labelPDC)
+        labelPDC := label.new(bar_index, pdc, "PDC", style=label.style_label_down, color=colorPDC, textcolor=color.white, size=size.normal)
+
+    if showPW and not na(pwh)
+        label.delete(labelPWH)
+        labelPWH := label.new(bar_index, pwh, "PWH", style=label.style_label_down, color=colorPWH, textcolor=color.white, size=size.normal)
+    if showPW and not na(pwl)
+        label.delete(labelPWL)
+        labelPWL := label.new(bar_index, pwl, "PWL", style=label.style_label_down, color=colorPWL, textcolor=color.white, size=size.normal)
+
+    if showGlobex and not na(globexHigh)
+        label.delete(labelGlobexH)
+        labelGlobexH := label.new(bar_index, globexHigh, "G-H", style=label.style_label_down, color=colorGlobexH, textcolor=color.white, size=size.normal)
+    if showGlobex and not na(globexLow)
+        label.delete(labelGlobexL)
+        labelGlobexL := label.new(bar_index, globexLow, "G-L", style=label.style_label_down, color=colorGlobexL, textcolor=color.white, size=size.normal)
+
+    if showIB and not na(ibHigh)
+        label.delete(labelIBH)
+        labelIBH := label.new(bar_index, ibHigh, "IB-H", style=label.style_label_down, color=colorIBH, textcolor=color.white, size=size.normal)
+    if showIB and not na(ibLow)
+        label.delete(labelIBL)
+        labelIBL := label.new(bar_index, ibLow, "IB-L", style=label.style_label_down, color=colorIBL, textcolor=color.white, size=size.normal)

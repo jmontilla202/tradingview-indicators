@@ -1,0 +1,485 @@
+//@version=5
+indicator("ES Pattern Scanner [MTF]", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ INPUTS — TABLE SETTINGS
+// ─────────────────────────────────────────────────────────────
+grp_table   = "Table Settings"
+i_pos       = input.string("Bottom Right", "Table Position", options=["Top Right","Top Left","Top Center","Bottom Right","Bottom Left","Bottom Center","Middle Right","Middle Left"], group=grp_table)
+i_fontsize  = input.string("Normal", "Font Size", options=["Tiny","Small","Normal","Large","Huge"], group=grp_table)
+i_tbl_bg    = input.color(color.new(color.black, 15), "Table Background", group=grp_table)
+i_txt_color = input.color(color.white, "Text Color", group=grp_table)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ INPUTS — TIMEFRAMES
+// ─────────────────────────────────────────────────────────────
+grp_tf    = "Timeframes"
+i_tf_high  = input.timeframe("240", "High Timeframe (Swing Bias)",    group=grp_tf)
+i_tf_mid   = input.timeframe("60",  "Mid Timeframe (Intraday Conf.)", group=grp_tf)
+i_tf_entry = input.timeframe("15",  "Entry Timeframe",                group=grp_tf)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ INPUTS — PATTERN TOGGLES
+// ─────────────────────────────────────────────────────────────
+grp_pat     = "Pattern Toggles"
+i_en_hs     = input.bool(true, "Head & Shoulders / Inverse H&S",        group=grp_pat)
+i_en_db     = input.bool(true, "Double Top / Double Bottom",             group=grp_pat)
+i_en_tt     = input.bool(true, "Triple Top / Triple Bottom",             group=grp_pat)
+i_en_flag   = input.bool(true, "Bull Flag / Bear Flag",                  group=grp_pat)
+i_en_wedge  = input.bool(true, "Rising Wedge / Falling Wedge",           group=grp_pat)
+i_en_tri    = input.bool(true, "Ascending / Descending / Symm Triangle", group=grp_pat)
+i_en_pennant= input.bool(true, "Bull Pennant / Bear Pennant",            group=grp_pat)
+i_en_cup    = input.bool(true, "Cup & Handle",                           group=grp_pat)
+i_en_ob     = input.bool(true, "Order Block (Bull/Bear)",                group=grp_pat)
+i_en_fvg    = input.bool(true, "Fair Value Gap (Bull/Bear)",             group=grp_pat)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ INPUTS — SENSITIVITY
+// ─────────────────────────────────────────────────────────────
+grp_sens    = "Sensitivity"
+i_pivot_len = input.int(5,     "Pivot Lookback Length",           minval=2,     maxval=20,   group=grp_sens)
+i_sym_tol   = input.float(0.003,"Symmetry Tolerance (0.3% = 0.003)", minval=0.001, maxval=0.02, step=0.001, group=grp_sens)
+i_vol_conf  = input.bool(true, "Require Volume Confirmation",     group=grp_sens)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ SIZE + POSITION HELPERS
+// ─────────────────────────────────────────────────────────────
+fs(s) =>
+    s == "Tiny"  ? size.tiny  :    s == "Small" ? size.small : s == "Large" ? size.large : s == "Huge"  ? size.huge  : size.normal
+
+tbl_pos(p) =>
+    p == "Top Right"    ? position.top_right    :    p == "Top Left"     ? position.top_left     :    p == "Top Center"   ? position.top_center   :    p == "Bottom Left"  ? position.bottom_left  :    p == "Bottom Center"? position.bottom_center:    p == "Middle Right" ? position.middle_right :    p == "Middle Left"  ? position.middle_left  :    position.bottom_right
+
+// ─────────────────────────────────────────────────────────────
+// ░░ BASE INDICATORS (current bar, used by all TF requests)
+// ─────────────────────────────────────────────────────────────
+atr      = ta.atr(14)
+avg_vol  = ta.sma(volume, 20)
+
+within(a, b, tol) => math.abs(a - b) / b <= tol
+
+ph(l) => ta.pivothigh(high, l, l)
+pl(l) => ta.pivotlow(low,  l, l)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ PATTERN DETECTION — PAIRED (bull, bear) TUPLES
+// Each function returns [bullish, bearish] as a tuple
+// This halves security requests: 20 calls instead of 60
+// ─────────────────────────────────────────────────────────────
+
+// ── 1. Double Top / Bottom
+f_double() =>
+    p1h = ph(i_pivot_len)
+    p2h = ph(i_pivot_len)[i_pivot_len * 2]
+    p1l = pl(i_pivot_len)
+    p2l = pl(i_pivot_len)[i_pivot_len * 2]
+    nkl = ta.lowest(low,   i_pivot_len * 4)
+    nkh = ta.highest(high, i_pivot_len * 4)
+    vol_ok = i_vol_conf ? volume > avg_vol : true
+    top = not na(p1h) and not na(p2h) and within(p1h, p2h, i_sym_tol) and close < nkl + atr and vol_ok
+    bot = not na(p1l) and not na(p2l) and within(p1l, p2l, i_sym_tol) and close > nkh - atr and vol_ok
+    [top, bot]
+
+// ── 2. Triple Top / Bottom
+f_triple() =>
+    p1h = ph(i_pivot_len)
+    p2h = ph(i_pivot_len)[i_pivot_len * 2]
+    p3h = ph(i_pivot_len)[i_pivot_len * 4]
+    p1l = pl(i_pivot_len)
+    p2l = pl(i_pivot_len)[i_pivot_len * 2]
+    p3l = pl(i_pivot_len)[i_pivot_len * 4]
+    top = not na(p1h) and not na(p2h) and not na(p3h) and within(p1h, p2h, i_sym_tol) and within(p2h, p3h, i_sym_tol) and close < math.min(p1h, math.min(p2h, p3h))
+    bot = not na(p1l) and not na(p2l) and not na(p3l) and within(p1l, p2l, i_sym_tol) and within(p2l, p3l, i_sym_tol) and close > math.max(p1l, math.max(p2l, p3l))
+    [top, bot]
+
+// ── 3. Head & Shoulders / Inverse
+f_hs() =>
+    ls  = ph(i_pivot_len)[i_pivot_len * 4]
+    hd  = ph(i_pivot_len)[i_pivot_len * 2]
+    rs  = ph(i_pivot_len)
+    nkl = pl(i_pivot_len)[i_pivot_len * 3]
+    nkr = pl(i_pivot_len)[i_pivot_len]
+    ils = pl(i_pivot_len)[i_pivot_len * 4]
+    ihd = pl(i_pivot_len)[i_pivot_len * 2]
+    irs = pl(i_pivot_len)
+    inkl= ph(i_pivot_len)[i_pivot_len * 3]
+    inkr= ph(i_pivot_len)[i_pivot_len]
+    bear = not na(ls)  and not na(hd)  and not na(rs)  and hd > ls  and hd > rs  and within(ls,  rs,  i_sym_tol*2) and not na(nkl)  and not na(nkr)  and within(nkl,  nkr,  i_sym_tol*2) and close < math.avg(nkl,  nkr)
+    bull = not na(ils) and not na(ihd) and not na(irs) and ihd < ils and ihd < irs and within(ils, irs, i_sym_tol*2) and not na(inkl) and not na(inkr) and within(inkl, inkr, i_sym_tol*2) and close > math.avg(inkl, inkr)
+    [bear, bull]
+
+// ── 4. Bull / Bear Flag
+f_flag() =>
+    pb = 8
+    fb = 5
+    bull = (close[fb] - close[fb+pb] > atr*2) and (ta.highest(high,fb) - ta.lowest(low,fb) < atr*1.5) and close < close[fb] and close > ta.highest(high,fb)[1]
+    bear = (close[fb+pb] - close[fb] > atr*2) and (ta.highest(high,fb) - ta.lowest(low,fb) < atr*1.5) and close > close[fb] and close < ta.lowest(low,fb)[1]
+    [bull, bear]
+
+// ── 5. Rising / Falling Wedge
+f_wedge() =>
+    lb = 20
+    ur = ta.highest(high,lb) - ta.lowest(high,lb)
+    lr = ta.highest(low,lb)  - ta.lowest(low,lb)
+    rising  = ta.lowest(low,lb) < ta.lowest(low,lb/2)  and lr > ur*0.5 and close < ta.lowest(low,3)[1]
+    falling = ta.highest(high,lb) > ta.highest(high,lb/2) and ur > lr*0.5 and close > ta.highest(high,3)[1]
+    [falling, rising]
+    // falling wedge = bullish breakout, rising wedge = bearish breakdown
+
+// ── 6. Triangles (Ascending=bull, Descending=bear, Symm=bull bias)
+f_triangle() =>
+    lb = 20
+    asc  = (ta.highest(high,lb) - ta.highest(high,lb/2) < atr*0.5) and ta.lowest(low,lb/2) > ta.lowest(low,lb) and close > ta.highest(high,lb) - atr*0.3
+    desc = (ta.lowest(low,lb/2)  - ta.lowest(low,lb)   < atr*0.5) and ta.highest(high,lb/2) < ta.highest(high,lb) and close < ta.lowest(low,lb) + atr*0.3
+    symm = ta.highest(high,lb/2) < ta.highest(high,lb) and ta.lowest(low,lb/2) > ta.lowest(low,lb)
+    bull = asc or symm
+    bear = desc
+    [bull, bear]
+
+// ── 7. Bull / Bear Pennant
+f_pennant() =>
+    pb = 6
+    pn = 4
+    contracting = (ta.highest(high,pn) - ta.lowest(low,pn)) < (ta.highest(high,pn)[pn] - ta.lowest(low,pn)[pn]) * 0.6
+    bull = (close[pn] - close[pn+pb] > atr*2.5) and contracting and close > close[1]
+    bear = (close[pn+pb] - close[pn] > atr*2.5) and contracting and close < close[1]
+    [bull, bear]
+
+// ── 8. Cup & Handle (bullish only)
+f_cup() =>
+    cl2 = 30
+    hl2 = 8
+    cl_h = ta.highest(high,cl2)[hl2]
+    cl_b = ta.lowest(low,cl2)[hl2]
+    cr_h = ta.highest(high,hl2)
+    depth  = cl_h - cl_b
+    h_ret  = cr_h - ta.lowest(low,hl2)
+    bull = within(cl_h,cr_h,i_sym_tol*3) and h_ret < depth*0.5 and close > cr_h - atr*0.2
+    [bull, false]
+
+// ── 9. Order Block (ES Priority ⭐)
+f_ob() =>
+    bull = close[1] < open[1] and close > open and (close-open) > atr*1.2 and low <= high[1] and high >= low[1]
+    bear = close[1] > open[1] and close < open and (open-close) > atr*1.2 and high >= low[1] and low <= high[1]
+    [bull, bear]
+
+// ── 10. Fair Value Gap (ES Priority ⭐)
+f_fvg() =>
+    bull = low[0] > high[2] and (low[0] - high[2]) > atr*0.3
+    bear = high[0] < low[2] and (low[2] - high[0]) > atr*0.3
+    [bull, bear]
+
+// ─────────────────────────────────────────────────────────────
+// ░░ MULTI-TIMEFRAME REQUESTS — 20 CALLS TOTAL (under 40 limit)
+// Each request returns a [bull, bear] tuple for the pattern
+// ─────────────────────────────────────────────────────────────
+[h_db_bull,   h_db_bear]   = request.security(syminfo.tickerid, i_tf_high,  f_double(),   lookahead=barmerge.lookahead_off)
+[h_tt_bull,   h_tt_bear]   = request.security(syminfo.tickerid, i_tf_high,  f_triple(),   lookahead=barmerge.lookahead_off)
+[h_hs_bear,   h_hs_bull]   = request.security(syminfo.tickerid, i_tf_high,  f_hs(),       lookahead=barmerge.lookahead_off)
+[h_flag_bull, h_flag_bear] = request.security(syminfo.tickerid, i_tf_high,  f_flag(),     lookahead=barmerge.lookahead_off)
+[h_wdg_bull,  h_wdg_bear]  = request.security(syminfo.tickerid, i_tf_high,  f_wedge(),    lookahead=barmerge.lookahead_off)
+[h_tri_bull,  h_tri_bear]  = request.security(syminfo.tickerid, i_tf_high,  f_triangle(), lookahead=barmerge.lookahead_off)
+[h_pen_bull,  h_pen_bear]  = request.security(syminfo.tickerid, i_tf_high,  f_pennant(),  lookahead=barmerge.lookahead_off)
+[h_cup_bull,  h_cup_bear]  = request.security(syminfo.tickerid, i_tf_high,  f_cup(),      lookahead=barmerge.lookahead_off)
+[h_ob_bull,   h_ob_bear]   = request.security(syminfo.tickerid, i_tf_high,  f_ob(),       lookahead=barmerge.lookahead_off)
+[h_fvg_bull,  h_fvg_bear]  = request.security(syminfo.tickerid, i_tf_high,  f_fvg(),      lookahead=barmerge.lookahead_off)
+
+[m_db_bull,   m_db_bear]   = request.security(syminfo.tickerid, i_tf_mid,   f_double(),   lookahead=barmerge.lookahead_off)
+[m_tt_bull,   m_tt_bear]   = request.security(syminfo.tickerid, i_tf_mid,   f_triple(),   lookahead=barmerge.lookahead_off)
+[m_hs_bear,   m_hs_bull]   = request.security(syminfo.tickerid, i_tf_mid,   f_hs(),       lookahead=barmerge.lookahead_off)
+[m_flag_bull, m_flag_bear] = request.security(syminfo.tickerid, i_tf_mid,   f_flag(),     lookahead=barmerge.lookahead_off)
+[m_wdg_bull,  m_wdg_bear]  = request.security(syminfo.tickerid, i_tf_mid,   f_wedge(),    lookahead=barmerge.lookahead_off)
+[m_tri_bull,  m_tri_bear]  = request.security(syminfo.tickerid, i_tf_mid,   f_triangle(), lookahead=barmerge.lookahead_off)
+[m_pen_bull,  m_pen_bear]  = request.security(syminfo.tickerid, i_tf_mid,   f_pennant(),  lookahead=barmerge.lookahead_off)
+[m_cup_bull,  m_cup_bear]  = request.security(syminfo.tickerid, i_tf_mid,   f_cup(),      lookahead=barmerge.lookahead_off)
+[m_ob_bull,   m_ob_bear]   = request.security(syminfo.tickerid, i_tf_mid,   f_ob(),       lookahead=barmerge.lookahead_off)
+[m_fvg_bull,  m_fvg_bear]  = request.security(syminfo.tickerid, i_tf_mid,   f_fvg(),      lookahead=barmerge.lookahead_off)
+
+[e_db_bull,   e_db_bear]   = request.security(syminfo.tickerid, i_tf_entry, f_double(),   lookahead=barmerge.lookahead_off)
+[e_tt_bull,   e_tt_bear]   = request.security(syminfo.tickerid, i_tf_entry, f_triple(),   lookahead=barmerge.lookahead_off)
+[e_hs_bear,   e_hs_bull]   = request.security(syminfo.tickerid, i_tf_entry, f_hs(),       lookahead=barmerge.lookahead_off)
+[e_flag_bull, e_flag_bear] = request.security(syminfo.tickerid, i_tf_entry, f_flag(),     lookahead=barmerge.lookahead_off)
+[e_wdg_bull,  e_wdg_bear]  = request.security(syminfo.tickerid, i_tf_entry, f_wedge(),    lookahead=barmerge.lookahead_off)
+[e_tri_bull,  e_tri_bear]  = request.security(syminfo.tickerid, i_tf_entry, f_triangle(), lookahead=barmerge.lookahead_off)
+[e_pen_bull,  e_pen_bear]  = request.security(syminfo.tickerid, i_tf_entry, f_pennant(),  lookahead=barmerge.lookahead_off)
+[e_cup_bull,  e_cup_bear]  = request.security(syminfo.tickerid, i_tf_entry, f_cup(),      lookahead=barmerge.lookahead_off)
+[e_ob_bull,   e_ob_bear]   = request.security(syminfo.tickerid, i_tf_entry, f_ob(),       lookahead=barmerge.lookahead_off)
+[e_fvg_bull,  e_fvg_bear]  = request.security(syminfo.tickerid, i_tf_entry, f_fvg(),      lookahead=barmerge.lookahead_off)
+
+
+// ─────────────────────────────────────────────────────────────
+// ░░ SIGNAL DOT LOGIC
+// 🟢 = HTF + MTF convergence (or any 2 TFs)
+// 🟡 = HTF only (bias signal)
+// 🔵 = Entry TF triggered (entry signal)
+// 🟠 = Any single higher TF, not yet entry
+// ⬜ = No signal
+// ─────────────────────────────────────────────────────────────
+sig_dot(h, m, e) =>
+    convergence = (h and m) or (h and e) or (m and e)
+    convergence ? "🟢" : h and not m and not e ? "🟡" : e ? "🔵" : h or m ? "🟠" : "⬜"
+
+sig_dot_col(h, m, e) =>
+    convergence = (h and m) or (h and e) or (m and e)
+    convergence ? color.lime : h and not m and not e ? color.yellow : e ? color.aqua : h or m ? color.orange : color.new(color.gray, 60)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ TP / SL CALCULATION HELPERS (ATR-based, ES-tuned)
+// ─────────────────────────────────────────────────────────────
+// ES-specific multipliers:
+// High-probability reversal patterns → tighter TP/SL
+// Continuation patterns              → wider TP ratios
+// All values are ATR multiples expressed as point strings
+
+tp_sl(pattern, bullish) =>
+    // Returns [tp_mult, sl_mult]
+    // These are ATR multiples — displayed as "X.Xx ATR"
+    is_hs     = pattern == "HS"
+    is_db     = pattern == "DB"
+    is_tt     = pattern == "TT"
+    is_flag   = pattern == "FLAG"
+    is_wedge  = pattern == "WEDGE"
+    is_tri    = pattern == "TRI"
+    is_pennant= pattern == "PENNANT"
+    is_cup    = pattern == "CUP"
+    is_ob     = pattern == "OB"
+    is_fvg    = pattern == "FVG"
+
+    tp_m = is_ob      ? 2.0 :
+           is_fvg     ? 1.5 :
+           is_flag    ? 3.0 :
+           is_pennant ? 3.0 :
+           is_hs      ? 2.5 :
+           is_db      ? 2.0 :
+           is_tt      ? 2.0 :
+           is_wedge   ? 2.5 :
+           is_tri     ? 2.0 :
+           is_cup     ? 3.5 :
+           2.0
+
+    sl_m = is_ob      ? 0.8 :
+           is_fvg     ? 0.6 :
+           is_flag    ? 1.0 :
+           is_pennant ? 1.0 :
+           is_hs      ? 1.2 :
+           is_db      ? 1.0 :
+           is_tt      ? 1.0 :
+           is_wedge   ? 1.2 :
+           is_tri     ? 1.0 :
+           is_cup     ? 1.5 :
+           1.0
+
+    tp_price = bullish ? close + atr * tp_m : close - atr * tp_m
+    sl_price = bullish ? close - atr * sl_m : close + atr * sl_m
+    tp_str   = str.tostring(math.round(tp_price, 2))
+    sl_str   = str.tostring(math.round(sl_price, 2))
+    [tp_str, sl_str]
+
+// ─────────────────────────────────────────────────────────────
+// ░░ TABLE CONSTRUCTION
+// ─────────────────────────────────────────────────────────────
+// Columns:
+//  0 = Pattern Name
+//  1 = Signal Dot
+//  2 = Bias
+//  3 = TP
+//  4 = SL
+//  5 = HTF dot
+//  6 = MTF dot
+//  7 = ETF dot
+
+// Total rows: 1 header + up to 20 pattern rows (10 patterns × 2 directions)
+// Disabled patterns are hidden (empty row)
+
+var table t = table.new(
+     tbl_pos(i_pos), 8, 22,
+     bgcolor      = i_tbl_bg,
+     border_width = 1,
+     border_color = color.new(color.gray, 50),
+     frame_width  = 2,
+     frame_color  = color.new(color.gray, 20))
+
+// ─── Reusable cell writers ───────────────────────────────────
+c(col, row, txt, bg, tc) =>
+    table.cell(t, col, row, txt,
+         text_color  = tc,
+         text_size   = fs(i_fontsize),
+         bgcolor     = bg,
+         text_halign = text.align_center)
+
+cl(col, row, txt, bg, tc) =>
+    table.cell(t, col, row, txt,
+         text_color  = tc,
+         text_size   = fs(i_fontsize),
+         bgcolor     = bg,
+         text_halign = text.align_left)
+
+// ─── TF dot cell (tiny colored square) ───────────────────────
+tf_dot(col, row, active) =>
+    table.cell(t, col, row, active ? "●" : "○",
+         text_color  = active ? color.lime : color.new(color.gray, 60),
+         text_size   = fs(i_fontsize),
+         bgcolor     = color.new(color.black, 60),
+         text_halign = text.align_center)
+
+// ─── Full pattern row writer ──────────────────────────────────
+// h/m/e = bool for each TF, bull = bullish direction, pat_key = TP/SL lookup key
+write_row(row, name, h, m, e, bull, pat_key) =>
+    dot     = sig_dot(h, m, e)
+    dot_col = sig_dot_col(h, m, e)
+    bias    = bull ? "Bullish" : "Bearish"
+    b_col   = bull ? color.lime : color.red
+    bg_name = color.new(color.black, 45)
+    bg_data = color.new(color.black, 60)
+    [tp, sl] = tp_sl(pat_key, bull)
+    cl(0, row, name,  bg_name, i_txt_color)
+    c( 1, row, dot,   bg_data, dot_col)
+    c( 2, row, bias,  bg_data, b_col)
+    c( 3, row, tp,    bg_data, color.new(color.lime, 20))
+    c( 4, row, sl,    bg_data, color.new(color.red,  20))
+    tf_dot(5, row, h)
+    tf_dot(6, row, m)
+    tf_dot(7, row, e)
+
+// ─── Header row ──────────────────────────────────────────────
+hdr_bg  = color.new(color.navy, 20)
+hdr_col = color.new(color.silver, 0)
+if barstate.islast
+    table.cell(t, 0, 0, "📊 PATTERN",         text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_left)
+    table.cell(t, 1, 0, "SIG",                 text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(t, 2, 0, "BIAS",                text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(t, 3, 0, "TP",                  text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(t, 4, 0, "SL",                  text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(t, 5, 0, i_tf_high + "H",       text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(t, 6, 0, i_tf_mid  + "M",       text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(t, 7, 0, i_tf_entry + "E",      text_color=hdr_col, text_size=fs(i_fontsize), bgcolor=hdr_bg, text_halign=text.align_center)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ WRITE ALL PATTERN ROWS  (only on last bar for performance)
+// ─────────────────────────────────────────────────────────────
+// Row assignment is static; disabled patterns show a dimmed placeholder
+blank_bg = color.new(color.black, 75)
+
+if barstate.islast
+
+    // ── Row 1-2: Order Block ⭐
+    if i_en_ob
+        write_row(1,  "⭐ Bull Order Block",   h_ob_bull,   m_ob_bull,   e_ob_bull,   true,  "OB")
+        write_row(2,  "⭐ Bear Order Block",   h_ob_bear,   m_ob_bear,   e_ob_bear,   false, "OB")
+    else
+        cl(0,1,"── Order Block (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,2,"── Order Block (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 3-4: Fair Value Gap ⭐
+    if i_en_fvg
+        write_row(3,  "⭐ Bull FVG",           h_fvg_bull,  m_fvg_bull,  e_fvg_bull,  true,  "FVG")
+        write_row(4,  "⭐ Bear FVG",           h_fvg_bear,  m_fvg_bear,  e_fvg_bear,  false, "FVG")
+    else
+        cl(0,3,"── Fair Value Gap (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,4,"── Fair Value Gap (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 5-6: Head & Shoulders
+    if i_en_hs
+        write_row(5,  "Head & Shoulders",      h_hs_bear,   m_hs_bear,   e_hs_bear,   false, "HS")
+        write_row(6,  "Inv. Head & Shoulders", h_hs_bull,   m_hs_bull,   e_hs_bull,   true,  "HS")
+    else
+        cl(0,5,"── H&S (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,6,"── H&S (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 7-8: Double Top / Bottom
+    if i_en_db
+        write_row(7,  "Double Top",            h_db_bear,   m_db_bear,   e_db_bear,   false, "DB")
+        write_row(8,  "Double Bottom",         h_db_bull,   m_db_bull,   e_db_bull,   true,  "DB")
+    else
+        cl(0,7,"── Double Top/Bottom (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,8,"── Double Top/Bottom (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 9-10: Triple Top / Bottom
+    if i_en_tt
+        write_row(9,  "Triple Top",            h_tt_bear,   m_tt_bear,   e_tt_bear,   false, "TT")
+        write_row(10, "Triple Bottom",         h_tt_bull,   m_tt_bull,   e_tt_bull,   true,  "TT")
+    else
+        cl(0,9, "── Triple Top/Bottom (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,10,"── Triple Top/Bottom (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 11-12: Flags
+    if i_en_flag
+        write_row(11, "Bull Flag",             h_flag_bull, m_flag_bull, e_flag_bull, true,  "FLAG")
+        write_row(12, "Bear Flag",             h_flag_bear, m_flag_bear, e_flag_bear, false, "FLAG")
+    else
+        cl(0,11,"── Flags (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,12,"── Flags (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 13-14: Wedges
+    if i_en_wedge
+        write_row(13, "Falling Wedge (Bull)",  h_wdg_bull,  m_wdg_bull,  e_wdg_bull,  true,  "WEDGE")
+        write_row(14, "Rising Wedge (Bear)",   h_wdg_bear,  m_wdg_bear,  e_wdg_bear,  false, "WEDGE")
+    else
+        cl(0,13,"── Wedges (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,14,"── Wedges (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 15-17: Triangles
+    if i_en_tri
+        write_row(15, "Ascending Triangle",    h_tri_bull,  m_tri_bull,  e_tri_bull,  true,  "TRI")
+        write_row(16, "Descending Triangle",   h_tri_bear,  m_tri_bear,  e_tri_bear,  false, "TRI")
+        write_row(17, "Symm. Triangle",        h_tri_bull,  m_tri_bull,  e_tri_bull,  true,  "TRI")
+    else
+        cl(0,15,"── Triangles (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,16,"── Triangles (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,17,"── Triangles (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 18-19: Pennants
+    if i_en_pennant
+        write_row(18, "Bull Pennant",          h_pen_bull,  m_pen_bull,  e_pen_bull,  true,  "PENNANT")
+        write_row(19, "Bear Pennant",          h_pen_bear,  m_pen_bear,  e_pen_bear,  false, "PENNANT")
+    else
+        cl(0,18,"── Pennants (disabled) ──", blank_bg, color.new(color.gray,60))
+        cl(0,19,"── Pennants (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 20: Cup & Handle
+    if i_en_cup
+        write_row(20, "Cup & Handle",          h_cup_bull,  m_cup_bull,  e_cup_bull,  true,  "CUP")
+    else
+        cl(0,20,"── Cup & Handle (disabled) ──", blank_bg, color.new(color.gray,60))
+
+    // ── Row 21: Legend
+    leg_bg  = color.new(color.black, 30)
+    leg_col = color.new(color.silver, 20)
+    table.cell(t, 0, 21, "🟢 Confluence",  text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+    table.cell(t, 1, 21, "🟡 HTF Only",   text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+    table.cell(t, 2, 21, "🔵 Entry TF",   text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+    table.cell(t, 3, 21, "🟠 Single TF",  text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+    table.cell(t, 4, 21, "⬜ None",        text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+    table.cell(t, 5, 21, "",               text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+    table.cell(t, 6, 21, "",               text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+    table.cell(t, 7, 21, "",               text_color=leg_col, text_size=size.tiny, bgcolor=leg_bg, text_halign=text.align_center)
+
+// ─────────────────────────────────────────────────────────────
+// ░░ ALERTS
+// ─────────────────────────────────────────────────────────────
+any_confluence =
+     (h_ob_bull  and m_ob_bull)  or (h_ob_bear  and m_ob_bear)  or
+     (h_fvg_bull and m_fvg_bull) or (h_fvg_bear and m_fvg_bear) or
+     (h_hs_bull  and m_hs_bull)  or (h_hs_bear  and m_hs_bear)  or
+     (h_db_bull  and m_db_bull)  or (h_db_bear  and m_db_bear)  or
+     (h_tt_bull  and m_tt_bull)  or (h_tt_bear  and m_tt_bear)  or
+     (h_flag_bull and m_flag_bull) or (h_flag_bear and m_flag_bear) or
+     (h_wdg_bull and m_wdg_bull) or (h_wdg_bear and m_wdg_bear) or
+     (h_tri_bull and m_tri_bull) or (h_tri_bear and m_tri_bear) or
+     (h_pen_bull and m_pen_bull) or (h_pen_bear and m_pen_bear) or
+     (h_cup_bull and m_cup_bull)
+
+any_entry =
+     e_ob_bull  or e_ob_bear  or e_fvg_bull or e_fvg_bear or
+     e_hs_bull  or e_hs_bear  or e_db_bull  or e_db_bear  or
+     e_tt_bull  or e_tt_bear  or e_flag_bull or e_flag_bear or
+     e_wdg_bull or e_wdg_bear or e_tri_bull or e_tri_bear  or
+     e_pen_bull or e_pen_bear or e_cup_bull
+
+es_priority_confluence =
+     (h_ob_bull  and m_ob_bull)  or (h_ob_bear  and m_ob_bear) or
+     (h_fvg_bull and m_fvg_bull) or (h_fvg_bear and m_fvg_bear)
+
+alertcondition(any_confluence,         "🟢 MTF Confluence Detected",       "Pattern confluence on 2+ timeframes.")
+alertcondition(any_entry,              "🔵 Entry TF Pattern Triggered",    "Entry timeframe pattern triggered.")
+alertcondition(es_priority_confluence, "⭐ ES Priority Confluence (OB/FVG)","OB or FVG confluence on HTF + MTF.")
