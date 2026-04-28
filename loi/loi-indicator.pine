@@ -7,8 +7,8 @@ showPD = input.bool(true, "Show Previous Day", group="Display")
 showPW = input.bool(true, "Show Previous Week", group="Display")
 showGlobex = input.bool(true, "Show Globex (Overnight)", group="Display")
 showIB = input.bool(true, "Show Initial Balance (9:30-10:30)", group="Display")
-showORB15 = input.bool(true, "Show 15-Min ORB (9:45-11:30)", group="Display")
-showORB30 = input.bool(true, "Show 30-Min ORB (10:00-11:30)", group="Display")
+showORB15 = input.bool(true, "Show 15-Min ORB (9:45-9:59)", group="Display")
+showORB30 = input.bool(true, "Show 30-Min ORB (10:00-10:29)", group="Display")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
@@ -26,6 +26,16 @@ colorORB15L = input.color(color.new(color.orange, 0), "ORB-15 Low Color", group=
 colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="Colors")
 colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
 
+// Line Style & Width
+lineStyle = input.string(title="Line Style", defval="Dashed", options=["Solid", "Dashed", "Dotted"], group="Line Style")
+lineWidth = input.int(title="Line Width", defval=1, minval=1, maxval=4, group="Line Style")
+
+getLineStyle() =>
+    switch lineStyle
+        "Solid" => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+
 // ===== TIME VARIABLES (DEFINED ONCE) =====
 hourET = hour(time, "America/New_York")
 minuteET = minute(time, "America/New_York")
@@ -38,11 +48,11 @@ inGlobex = not inRTH
 
 // ORB-15 window: 9:30-9:45
 inOrb15Window = inRTH and ((hourET == 9 and minuteET >= 30 and minuteET < 45) or (hourET == 10 and minuteET < 15))
-orb15Display = inRTH and ((hourET == 9 and minuteET >= 45) or (hourET == 10) or (hourET == 11 and minuteET < 30))
+orb15Display = inRTH and ((hourET == 9 and minuteET >= 45 and minuteET < 60) or (hourET == 10 and minuteET == 0))
 
 // ORB-30 window: 9:30-10:00
 inOrb30Window = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET == 0))
-orb30Display = inRTH and ((hourET == 10 and minuteET >= 0) or (hourET == 11 and minuteET < 30))
+orb30Display = inRTH and ((hourET == 10 and minuteET >= 0 and minuteET < 30))
 
 // IB display: only after 10:30am
 ibDisplay = inRTH and ((hourET == 10 and minuteET >= 30) or (hourET > 10) or (hourET == 16 and minuteET == 0))
@@ -187,56 +197,56 @@ if barstate.islast
     // Previous Day levels
     if showPD and not na(pdh)
         line.delete(linePDH)
-        linePDH := line.new(startBar, pdh, bar_index, pdh, color=colorPDH, width=1, style=line.style_dashed, extend=extend.right)
+        linePDH := line.new(startBar, pdh, bar_index, pdh, color=colorPDH, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showPD and not na(pdl)
         line.delete(linePDL)
-        linePDL := line.new(startBar, pdl, bar_index, pdl, color=colorPDL, width=1, style=line.style_dashed, extend=extend.right)
+        linePDL := line.new(startBar, pdl, bar_index, pdl, color=colorPDL, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showPD and not na(pdo)
         line.delete(linePDO)
-        linePDO := line.new(startBar, pdo, bar_index, pdo, color=colorPDO, width=1, style=line.style_dashed, extend=extend.right)
+        linePDO := line.new(startBar, pdo, bar_index, pdo, color=colorPDO, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showPD and not na(pdc)
         line.delete(linePDC)
-        linePDC := line.new(startBar, pdc, bar_index, pdc, color=colorPDC, width=1, style=line.style_dashed, extend=extend.right)
+        linePDC := line.new(startBar, pdc, bar_index, pdc, color=colorPDC, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
     // Previous Week levels
     if showPW and not na(pwh)
         line.delete(linePWH)
-        linePWH := line.new(startBar, pwh, bar_index, pwh, color=colorPWH, width=1, style=line.style_dashed, extend=extend.right)
+        linePWH := line.new(startBar, pwh, bar_index, pwh, color=colorPWH, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showPW and not na(pwl)
         line.delete(linePWL)
-        linePWL := line.new(startBar, pwl, bar_index, pwl, color=colorPWL, width=1, style=line.style_dashed, extend=extend.right)
+        linePWL := line.new(startBar, pwl, bar_index, pwl, color=colorPWL, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
     // Globex levels
     if showGlobex and not na(globexHigh)
         line.delete(lineGlobexH)
-        lineGlobexH := line.new(startBar, globexHigh, bar_index, globexHigh, color=colorGlobexH, width=1, style=line.style_dashed, extend=extend.right)
+        lineGlobexH := line.new(startBar, globexHigh, bar_index, globexHigh, color=colorGlobexH, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showGlobex and not na(globexLow)
         line.delete(lineGlobexL)
-        lineGlobexL := line.new(startBar, globexLow, bar_index, globexLow, color=colorGlobexL, width=1, style=line.style_dashed, extend=extend.right)
+        lineGlobexL := line.new(startBar, globexLow, bar_index, globexLow, color=colorGlobexL, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
     // IB levels (only display from 10:30am onwards)
     if showIB and ibDisplay and not na(ibHigh)
         line.delete(lineIBH)
-        lineIBH := line.new(startBar, ibHigh, bar_index, ibHigh, color=colorIBH, width=1, style=line.style_dashed, extend=extend.right)
+        lineIBH := line.new(startBar, ibHigh, bar_index, ibHigh, color=colorIBH, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showIB and ibDisplay and not na(ibLow)
         line.delete(lineIBL)
-        lineIBL := line.new(startBar, ibLow, bar_index, ibLow, color=colorIBL, width=1, style=line.style_dashed, extend=extend.right)
+        lineIBL := line.new(startBar, ibLow, bar_index, ibLow, color=colorIBL, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
-    // ORB-15 levels (display from 9:45 to 11:30)
+    // ORB-15 levels (display from 9:45 to 9:59)
     if showORB15 and orb15Display and orb15Formed and not na(orb15High)
         line.delete(lineORB15H)
-        lineORB15H := line.new(startBar, orb15High, bar_index, orb15High, color=colorORB15H, width=1, style=line.style_dashed, extend=extend.right)
+        lineORB15H := line.new(startBar, orb15High, bar_index, orb15High, color=colorORB15H, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showORB15 and orb15Display and orb15Formed and not na(orb15Low)
         line.delete(lineORB15L)
-        lineORB15L := line.new(startBar, orb15Low, bar_index, orb15Low, color=colorORB15L, width=1, style=line.style_dashed, extend=extend.right)
+        lineORB15L := line.new(startBar, orb15Low, bar_index, orb15Low, color=colorORB15L, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
-    // ORB-30 levels (display from 10:00 to 11:30)
+    // ORB-30 levels (display from 10:00 to 10:29)
     if showORB30 and orb30Display and orb30Formed and not na(orb30High)
         line.delete(lineORB30H)
-        lineORB30H := line.new(startBar, orb30High, bar_index, orb30High, color=colorORB30H, width=1, style=line.style_dashed, extend=extend.right)
+        lineORB30H := line.new(startBar, orb30High, bar_index, orb30High, color=colorORB30H, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showORB30 and orb30Display and orb30Formed and not na(orb30Low)
         line.delete(lineORB30L)
-        lineORB30L := line.new(startBar, orb30Low, bar_index, orb30Low, color=colorORB30L, width=1, style=line.style_dashed, extend=extend.right)
+        lineORB30L := line.new(startBar, orb30Low, bar_index, orb30Low, color=colorORB30L, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
 // ===== LABELS =====
 var label labelPDH = na
@@ -293,7 +303,7 @@ if barstate.islast
         label.delete(labelIBL)
         labelIBL := label.new(bar_index, ibLow, "IBL", style=label.style_label_down, color=colorIBL, textcolor=color.white, size=size.normal)
 
-    // ORB-15 labels (display from 9:45 to 11:30)
+    // ORB-15 labels (display from 9:45 to 9:59)
     if showORB15 and orb15Display and orb15Formed and not na(orb15High)
         label.delete(labelORB15H)
         labelORB15H := label.new(bar_index, orb15High, "ORB-15-H", style=label.style_label_down, color=colorORB15H, textcolor=color.white, size=size.normal)
@@ -301,7 +311,7 @@ if barstate.islast
         label.delete(labelORB15L)
         labelORB15L := label.new(bar_index, orb15Low, "ORB-15-L", style=label.style_label_down, color=colorORB15L, textcolor=color.white, size=size.normal)
 
-    // ORB-30 labels (display from 10:00 to 11:30)
+    // ORB-30 labels (display from 10:00 to 10:29)
     if showORB30 and orb30Display and orb30Formed and not na(orb30High)
         label.delete(labelORB30H)
         labelORB30H := label.new(bar_index, orb30High, "ORB-30-H", style=label.style_label_down, color=colorORB30H, textcolor=color.white, size=size.normal)
