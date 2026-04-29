@@ -1,228 +1,320 @@
 //@version=6
 indicator("Daily Key Levels", overlay=true, max_lines_count=500, max_labels_count=500)
 
-// =============================================================
-// =========================== INPUTS ===========================
-// =============================================================
+// ===== INPUTS =====
 // Display toggles
-showPD   = input.bool(true, "Show Previous Day", group="Display")
-showPW   = input.bool(true, "Show Previous Week", group="Display")
-showGlob = input.bool(true, "Show Globex (Overnight)", group="Display")
-showIB   = input.bool(true, "Show Initial Balance (9:30-10:30)", group="Display")
-showO15  = input.bool(true, "Show 15‑Min ORB (9:45-9:59)", group="Display")
-showO30  = input.bool(true, "Show 30‑Min ORB (10:00-10:29)", group="Display")
+showPD = input.bool(true, "Show Previous Day", group="Display")
+showPW = input.bool(true, "Show Previous Week", group="Display")
+showGlobex = input.bool(true, "Show Globex (Overnight)", group="Display")
+showIB = input.bool(true, "Show Initial Balance (9:30-10:30)", group="Display")
+showORB15 = input.bool(true, "Show 15-Min ORB (9:45-9:59)", group="Display")
+showORB30 = input.bool(true, "Show 30-Min ORB (10:00-10:29)", group="Display")
 
-// Colours – you can adjust defaults as you like
-cPDH = input.color(color.red,    "PDH Color",    group="Colors")
-cPDL = input.color(color.green,  "PDL Color",    group="Colors")
-cPDO = input.color(color.blue,   "PDO Color",    group="Colors")
-cPDC = input.color(color.purple, "PDC Color",    group="Colors")
+// Colors
+colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
+colorPDL = input.color(color.new(color.green, 0), "PDL Color", group="Colors")
+colorPDO = input.color(color.new(color.blue, 0), "PDO Color", group="Colors")
+colorPDC = input.color(color.new(color.purple, 0), "PDC Color", group="Colors")
+colorPWH = input.color(color.new(color.purple, 0), "PWH Color", group="Colors")
+colorPWL = input.color(color.new(color.purple, 0), "PWL Color", group="Colors")
+colorGlobexH = input.color(color.new(color.gray, 0), "Globex High Color", group="Colors")
+colorGlobexL = input.color(color.new(color.gray, 0), "Globex Low Color", group="Colors")
+colorIBH = input.color(color.new(color.blue, 0), "IBH Color", group="Colors")
+colorIBL = input.color(color.new(color.blue, 0), "IBL Color", group="Colors")
+colorORB15H = input.color(color.new(color.orange, 0), "ORB-15 High Color", group="Colors")
+colorORB15L = input.color(color.new(color.orange, 0), "ORB-15 Low Color", group="Colors")
+colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="Colors")
+colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
 
-cPWH = input.color(color.purple, "PWH Color",    group="Colors")
-cPWL = input.color(color.purple, "PWL Color",    group="Colors")
+// Line Style & Width
+lineStyle = input.string(title="Line Style", defval="Dashed", options=["Solid", "Dashed", "Dotted"], group="Line Style")
+lineWidth = input.int(title="Line Width", defval=1, minval=1, maxval=4, group="Line Style")
 
-cGlobH = input.color(color.gray,  "Globex High Color",  group="Colors")
-cGlobL = input.color(color.gray,  "Globex Low Color",   group="Colors")
+getLineStyle() =>
+    switch lineStyle
+        "Solid" => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
 
-cIBH   = input.color(color.blue,  "IB High Color",      group="Colors")
-cIBL   = input.color(color.blue,  "IB Low Color",       group="Colors")
+// ===== TIME VARIABLES (DEFINED ONCE) =====
+hourET = hour(time, "America/New_York")
+minuteET = minute(time, "America/New_York")
+newDay = ta.change(dayofmonth) != 0
 
-cO15H  = input.color(color.orange,"ORB‑15 High Color",  group="Colors")
-cO15L  = input.color(color.orange,"ORB‑15 Low Color",   group="Colors")
+// Session definitions
+inRTH = (hourET == 9 and minuteET >= 30) or (hourET > 9 and hourET < 16) or (hourET == 16 and minuteET == 0)
+inIB = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET < 30))
+inGlobex = not inRTH
 
-cO30H  = input.color(color.teal,  "ORB‑30 High Color",  group="Colors")
-cO30L  = input.color(color.teal,  "ORB‑30 Low Color",   group="Colors")
+// ORB-15 window: 9:30-9:45
+inOrb15Window = inRTH and ((hourET == 9 and minuteET >= 30 and minuteET < 45) or (hourET == 10 and minuteET < 15))
+orb15Display = inRTH and ((hourET == 9 and minuteET >= 45 and minuteET < 60) or (hourET == 10 and minuteET == 0))
 
-// Line style & width (global for every level)
-lineStyleStr = input.string("Dashed", "Line style", options=["Solid","Dashed","Dotted"], group="Line Style")
-lineWidth    = input.int(1, "Line width", minval=1, maxval=4, group="Line Style")
-lineStyle    = lineStyleStr == "Solid" ? line.style_solid : lineStyleStr == "Dotted" ? line.style_dotted : line.style_dashed
+// ORB-30 window: 9:30-10:00
+inOrb30Window = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET == 0))
+orb30Display = inRTH and ((hourET == 10 and minuteET >= 0 and minuteET < 30))
 
-// =============================================================
-// ====================== SESSION LOGIC ======================
-// =============================================================
-TZ      = "America/New_York"
-newDay  = ta.change(time("D", TZ)) != 0   // first bar of a new NY day
+// IB display: only after 10:30am
+ibDisplay = inRTH and ((hourET == 10 and minuteET >= 30) or (hourET > 10) or (hourET == 16 and minuteET == 0))
 
-// RTH (regular trading hours) – 09:30‑16:00 NY time
-inRTH   = not na(time(timeframe.period, "0930-1600", TZ))
-// Initial Balance (IB) – 09:30‑10:30 NY time
-inIB    = not na(time(timeframe.period, "0930-1030", TZ))
-// Globex (overnight) – everything outside RTH
-inGlob  = not inRTH
-
-// ORB‑15 (9:30‑9:45 formation, 9:45‑10:00 display)
-inOrb15Form = not na(time(timeframe.period, "0930-0945", TZ))
-showOrb15   = not na(time(timeframe.period, "0945-1000", TZ))
-
-// ORB‑30 (9:30‑10:00 formation, 10:00‑10:30 display)
-inOrb30Form = not na(time(timeframe.period, "0930-1000", TZ))
-showOrb30   = not na(time(timeframe.period, "1000-1030", TZ))
-
-// IB display – from 10:30 until the end of RTH
-showIBDisp = not na(time(timeframe.period, "1030-1600", TZ))
-
-// Detect the first bar of a new RTH session – used as line origin
-var int rthStart = 0
-if inRTH and not inRTH[1]
-    rthStart := bar_index
-
-// =============================================================
-// =========================== TYPES ===========================
-// =============================================================
-type Level
-    float  val   // current price level (na if not yet calculated)
-    color  col   // colour used for line & label
-    string txt   // label text (e.g. "PDH")
-    line   ln    // line object (created once and then updated)
-    label  lb    // label object (created once and then updated)
-    bool   show  // user‑toggle (input.bool)
-
-// =============================================================
-// ========================= CALCULATIONS ======================
-// =============================================================
-// 1️⃣ Previous Day – only RTH values are considered
-var float rthOpen = na, rthHigh = na, rthLow = na, rthClose = na
-var float pdh = na, pdl = na, pdo = na, pdc = na
+// ===== CALCULATE PREVIOUS DAY HIGH/LOW/OPEN/CLOSE (RTH ONLY) =====
+var float rthOpen = na
+var float rthHigh = na
+var float rthLow = na
+var float rthClose = na
+var float pdo = na
+var float pdh = na
+var float pdl = na
+var float pdc = na
 
 if newDay and not na(rthHigh)
-    // roll yesterday's RTH data into the PD variables
+    pdo := rthOpen
     pdh := rthHigh
     pdl := rthLow
-    pdo := rthOpen
     pdc := rthClose
-    rthOpen := rthHigh := rthLow := rthClose := na
+    rthOpen := na
+    rthHigh := na
+    rthLow := na
+    rthClose := na
 
 if inRTH
-    // initialise on the first RTH bar
-    rthOpen := na(rthOpen) ? open : rthOpen
-    rthHigh := na(rthHigh) ? high : math.max(rthHigh, high)
-    rthLow  := na(rthLow)  ? low  : math.min(rthLow,  low)
+    if na(rthOpen)
+        rthOpen := open
+        rthHigh := high
+        rthLow := low
+    else
+        rthHigh := math.max(rthHigh, high)
+        rthLow := math.min(rthLow, low)
     rthClose := close
 
-// 2️⃣ Previous Week – use security to fetch prior‑week high/low
-pwh = request.security(syminfo.tickerid, "W", high[1])
-pwl = request.security(syminfo.tickerid, "W", low[1])
+// ===== CALCULATE PREVIOUS WEEK HIGH/LOW =====
+pwh = request.security(syminfo.tickerid, "W", high[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+pwl = request.security(syminfo.tickerid, "W", low[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
 
-// 3️⃣ Globex – track high/low during the overnight session
-var float globHigh = na, globLow = na
-if inGlob
-    globHigh := na(globHigh) ? high : math.max(globHigh, high)
-    globLow  := na(globLow)  ? low  : math.min(globLow, low)
+// ===== CALCULATE GLOBEX HIGH/LOW (OVERNIGHT SESSION) =====
+var float globexHigh = na
+var float globexLow = na
 
-// 4️⃣ Initial Balance – 09:30‑10:30
-var float ibHigh = na, ibLow = na
+// Reset Globex at start of RTH session
+if inRTH and not inRTH[1]
+    globexHigh := na
+    globexLow := na
+
+// Track Globex high/low during Globex session
+if inGlobex
+    if na(globexHigh)
+        globexHigh := high
+        globexLow := low
+    else
+        globexHigh := math.max(globexHigh, high)
+        globexLow := math.min(globexLow, low)
+
+// ===== CALCULATE INITIAL BALANCE (9:30-10:30) =====
+var float ibHigh = na
+var float ibLow = na
+
+// Reset IB at start of RTH session
+if inRTH and not inRTH[1]
+    ibHigh := na
+    ibLow := na
+
+// Track IB high/low during IB period (9:30-10:30)
 if inIB
-    ibHigh := na(ibHigh) ? high : math.max(ibHigh, high)
-    ibLow  := na(ibLow)  ? low  : math.min(ibLow, low)
+    if na(ibHigh)
+        ibHigh := high
+        ibLow := low
+    else
+        ibHigh := math.max(ibHigh, high)
+        ibLow := math.min(ibLow, low)
 
-// 5️⃣ ORB‑15 – formation window 09:30‑09:45, display after 09:45
-var float orb15High = na, orb15Low = na
-var bool  orb15Formed = false
-if inOrb15Form
-    orb15High := na(orb15High) ? high : math.max(orb15High, high)
-    orb15Low  := na(orb15Low)  ? low  : math.min(orb15Low, low)
-else if not inOrb15Form and inOrb15Form[1] and not na(orb15High)
+// ===== CALCULATE ORB-15 (9:30-9:45) =====
+var float orb15High = na
+var float orb15Low = na
+var bool orb15Formed = false
+
+// Reset at start of RTH
+if inRTH and not inRTH[1]
+    orb15High := na
+    orb15Low := na
+    orb15Formed := false
+
+// Capture ORB-15 range during formation window
+if inOrb15Window
+    if na(orb15High)
+        orb15High := high
+        orb15Low := low
+    else
+        orb15High := math.max(orb15High, high)
+        orb15Low := math.min(orb15Low, low)
+
+// Mark ORB-15 as formed when window ends
+if not inOrb15Window and inOrb15Window[1] and not na(orb15High)
     orb15Formed := true
 
-// 6️⃣ ORB‑30 – formation window 09:30‑10:00, display after 10:00
-var float orb30High = na, orb30Low = na
-var bool  orb30Formed = false
-if inOrb30Form
-    orb30High := na(orb30High) ? high : math.max(orb30High, high)
-    orb30Low  := na(orb30Low)  ? low  : math.min(orb30Low, low)
-else if not inOrb30Form and inOrb30Form[1] and not na(orb30High)
+// ===== CALCULATE ORB-30 (9:30-10:00) =====
+var float orb30High = na
+var float orb30Low = na
+var bool orb30Formed = false
+
+// Reset at start of RTH
+if inRTH and not inRTH[1]
+    orb30High := na
+    orb30Low := na
+    orb30Formed := false
+
+// Capture ORB-30 range during formation window
+if inOrb30Window
+    if na(orb30High)
+        orb30High := high
+        orb30Low := low
+    else
+        orb30High := math.max(orb30High, high)
+        orb30Low := math.min(orb30Low, low)
+
+// Mark ORB-30 as formed when window ends
+if not inOrb30Window and inOrb30Window[1] and not na(orb30High)
     orb30Formed := true
 
-// =============================================================
-// =========================== HELPERS =========================
-// =============================================================
-// Update (or create) a level's line & label. Called only on the last bar.
-updateLevel(Level lvl, int startBar) =>
-    if lvl.show and not na(lvl.val)
-        if na(lvl.ln)
-            // first time – create objects
-            lvl.ln := line.new(startBar, lvl.val, bar_index, lvl.val,
-                               color = lvl.col, width = lineWidth, style = lineStyle, extend = extend.right)
-            lvl.lb := label.new(bar_index, lvl.val, lvl.txt,
-                               style = label.style_label_down, color = lvl.col, textcolor = color.white, size = size.normal)
-        else
-            // update existing objects (no allocation)
-            line.set_xy1(lvl.ln, startBar, lvl.val)
-            line.set_xy2(lvl.ln, bar_index, lvl.val)
-            line.set_color(lvl.ln, lvl.col)
-            label.set_xy(lvl.lb, bar_index, lvl.val)
-            label.set_color(lvl.lb, lvl.col)
-    else
-        // hide when not applicable
-        line.delete(lvl.ln)
-        label.delete(lvl.lb)
-        lvl.ln := na
-        lvl.lb := na
+// ===== PLOT LEVELS AS RAYS =====
+var line linePDH = na
+var line linePDL = na
+var line linePDO = na
+var line linePDC = na
+var line linePWH = na
+var line linePWL = na
+var line lineGlobexH = na
+var line lineGlobexL = na
+var line lineIBH = na
+var line lineIBL = na
+var line lineORB15H = na
+var line lineORB15L = na
+var line lineORB30H = na
+var line lineORB30L = na
 
-// =============================================================
-// ======================= LEVEL DECLARATIONS ==================
-// =============================================================
-var Level lPDH = Level.new(pdh, cPDH, "PDH", na, na, showPD)
-var Level lPDL = Level.new(pdl, cPDL, "PDL", na, na, showPD)
-var Level lPDO = Level.new(pdo, cPDO, "PDO", na, na, showPD)
-var Level lPDC = Level.new(pdc, cPDC, "PDC", na, na, showPD)
-
-var Level lPWH = Level.new(pwh, cPWH, "PWH", na, na, showPW)
-var Level lPWL = Level.new(pwl, cPWL, "PWL", na, na, showPW)
-
-var Level lGlobH = Level.new(globHigh, cGlobH, "GH", na, na, showGlob)
-var Level lGlobL = Level.new(globLow,  cGlobL, "GL", na, na, showGlob)
-
-var Level lIBH = Level.new(ibHigh, cIBH, "IBH", na, na, showIB)
-var Level lIBL = Level.new(ibLow,  cIBL, "IBL", na, na, showIB)
-
-var Level lO15H = Level.new(orb15High, cO15H, "ORB‑15‑H", na, na, showO15)
-var Level lO15L = Level.new(orb15Low,  cO15L, "ORB‑15‑L", na, na, showO15)
-
-var Level lO30H = Level.new(orb30High, cO30H, "ORB‑30‑H", na, na, showO30)
-var Level lO30L = Level.new(orb30Low,  cO30L, "ORB‑30‑L", na, na, showO30)
-
-// =============================================================
-// ============================ RENDER ==========================
-// =============================================================
 if barstate.islast
-    // Refresh the dynamic values (the Level structs hold references)
-    lPDH.val := pdh
-    lPDL.val := pdl
-    lPDO.val := pdo
-    lPDC.val := pdc
-    lPWH.val := pwh
-    lPWL.val := pwl
-    lGlobH.val := globHigh
-    lGlobL.val := globLow
-    lIBH.val := ibHigh
-    lIBL.val := ibLow
-    lO15H.val := orb15High
-    lO15L.val := orb15Low
-    lO30H.val := orb30High
-    lO30L.val := orb30Low
+    startBar = bar_index - 48
 
-    // Determine if a level should be visible at this moment (time‑dependent ones)
-    lIBH.show := showIB and showIBDisp
-    lIBL.show := showIB and showIBDisp
-    lO15H.show := showO15 and showOrb15 and orb15Formed
-    lO15L.show := showO15 and showOrb15 and orb15Formed
-    lO30H.show := showO30 and showOrb30 and orb30Formed
-    lO30L.show := showO30 and showOrb30 and orb30Formed
+    // Previous Day levels
+    if showPD and not na(pdh)
+        line.delete(linePDH)
+        linePDH := line.new(startBar, pdh, bar_index, pdh, color=colorPDH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showPD and not na(pdl)
+        line.delete(linePDL)
+        linePDL := line.new(startBar, pdl, bar_index, pdl, color=colorPDL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showPD and not na(pdo)
+        line.delete(linePDO)
+        linePDO := line.new(startBar, pdo, bar_index, pdo, color=colorPDO, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showPD and not na(pdc)
+        line.delete(linePDC)
+        linePDC := line.new(startBar, pdc, bar_index, pdc, color=colorPDC, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
-    // Draw / update all levels
-    updateLevel(lPDH, rthStart)
-    updateLevel(lPDL, rthStart)
-    updateLevel(lPDO, rthStart)
-    updateLevel(lPDC, rthStart)
-    updateLevel(lPWH, rthStart)
-    updateLevel(lPWL, rthStart)
-    updateLevel(lGlobH, rthStart)
-    updateLevel(lGlobL, rthStart)
-    updateLevel(lIBH, rthStart)
-    updateLevel(lIBL, rthStart)
-    updateLevel(lO15H, rthStart)
-    updateLevel(lO15L, rthStart)
-    updateLevel(lO30H, rthStart)
-    updateLevel(lO30L, rthStart)
+    // Previous Week levels
+    if showPW and not na(pwh)
+        line.delete(linePWH)
+        linePWH := line.new(startBar, pwh, bar_index, pwh, color=colorPWH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showPW and not na(pwl)
+        line.delete(linePWL)
+        linePWL := line.new(startBar, pwl, bar_index, pwl, color=colorPWL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
+    // Globex levels
+    if showGlobex and not na(globexHigh)
+        line.delete(lineGlobexH)
+        lineGlobexH := line.new(startBar, globexHigh, bar_index, globexHigh, color=colorGlobexH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showGlobex and not na(globexLow)
+        line.delete(lineGlobexL)
+        lineGlobexL := line.new(startBar, globexLow, bar_index, globexLow, color=colorGlobexL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
+    // IB levels (only display from 10:30am onwards)
+    if showIB and ibDisplay and not na(ibHigh)
+        line.delete(lineIBH)
+        lineIBH := line.new(startBar, ibHigh, bar_index, ibHigh, color=colorIBH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showIB and ibDisplay and not na(ibLow)
+        line.delete(lineIBL)
+        lineIBL := line.new(startBar, ibLow, bar_index, ibLow, color=colorIBL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
+    // ORB-15 levels (display from 9:45 to 9:59)
+    if showORB15 and orb15Display and orb15Formed and not na(orb15High)
+        line.delete(lineORB15H)
+        lineORB15H := line.new(startBar, orb15High, bar_index, orb15High, color=colorORB15H, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showORB15 and orb15Display and orb15Formed and not na(orb15Low)
+        line.delete(lineORB15L)
+        lineORB15L := line.new(startBar, orb15Low, bar_index, orb15Low, color=colorORB15L, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
+    // ORB-30 levels (display from 10:00 to 10:29)
+    if showORB30 and orb30Display and orb30Formed and not na(orb30High)
+        line.delete(lineORB30H)
+        lineORB30H := line.new(startBar, orb30High, bar_index, orb30High, color=colorORB30H, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showORB30 and orb30Display and orb30Formed and not na(orb30Low)
+        line.delete(lineORB30L)
+        lineORB30L := line.new(startBar, orb30Low, bar_index, orb30Low, color=colorORB30L, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
+// ===== LABELS =====
+var label labelPDH = na
+var label labelPDL = na
+var label labelPDO = na
+var label labelPDC = na
+var label labelPWH = na
+var label labelPWL = na
+var label labelGlobexH = na
+var label labelGlobexL = na
+var label labelIBH = na
+var label labelIBL = na
+var label labelORB15H = na
+var label labelORB15L = na
+var label labelORB30H = na
+var label labelORB30L = na
+
+if barstate.islast
+    // Previous Day labels
+    if showPD and not na(pdh)
+        label.delete(labelPDH)
+        labelPDH := label.new(bar_index, pdh, "PDH", style=label.style_label_down, color=colorPDH, textcolor=color.white, size=size.normal)
+    if showPD and not na(pdl)
+        label.delete(labelPDL)
+        labelPDL := label.new(bar_index, pdl, "PDL", style=label.style_label_down, color=colorPDL, textcolor=color.white, size=size.normal)
+    if showPD and not na(pdo)
+        label.delete(labelPDO)
+        labelPDO := label.new(bar_index, pdo, "PDO", style=label.style_label_down, color=colorPDO, textcolor=color.white, size=size.normal)
+    if showPD and not na(pdc)
+        label.delete(labelPDC)
+        labelPDC := label.new(bar_index, pdc, "PDC", style=label.style_label_down, color=colorPDC, textcolor=color.white, size=size.normal)
+
+    // Previous Week labels
+    if showPW and not na(pwh)
+        label.delete(labelPWH)
+        labelPWH := label.new(bar_index, pwh, "PWH", style=label.style_label_down, color=colorPWH, textcolor=color.white, size=size.normal)
+    if showPW and not na(pwl)
+        label.delete(labelPWL)
+        labelPWL := label.new(bar_index, pwl, "PWL", style=label.style_label_down, color=colorPWL, textcolor=color.white, size=size.normal)
+
+    // Globex labels
+    if showGlobex and not na(globexHigh)
+        label.delete(labelGlobexH)
+        labelGlobexH := label.new(bar_index, globexHigh, "GH", style=label.style_label_down, color=colorGlobexH, textcolor=color.white, size=size.normal)
+    if showGlobex and not na(globexLow)
+        label.delete(labelGlobexL)
+        labelGlobexL := label.new(bar_index, globexLow, "GL", style=label.style_label_down, color=colorGlobexL, textcolor=color.white, size=size.normal)
+
+    // IB labels (only display from 10:30am onwards)
+    if showIB and ibDisplay and not na(ibHigh)
+        label.delete(labelIBH)
+        labelIBH := label.new(bar_index, ibHigh, "IBH", style=label.style_label_down, color=colorIBH, textcolor=color.white, size=size.normal)
+    if showIB and ibDisplay and not na(ibLow)
+        label.delete(labelIBL)
+        labelIBL := label.new(bar_index, ibLow, "IBL", style=label.style_label_down, color=colorIBL, textcolor=color.white, size=size.normal)
+
+    // ORB-15 labels (display from 9:45 to 9:59)
+    if showORB15 and orb15Display and orb15Formed and not na(orb15High)
+        label.delete(labelORB15H)
+        labelORB15H := label.new(bar_index, orb15High, "ORB-15-H", style=label.style_label_down, color=colorORB15H, textcolor=color.white, size=size.normal)
+    if showORB15 and orb15Display and orb15Formed and not na(orb15Low)
+        label.delete(labelORB15L)
+        labelORB15L := label.new(bar_index, orb15Low, "ORB-15-L", style=label.style_label_down, color=colorORB15L, textcolor=color.white, size=size.normal)
+
+    // ORB-30 labels (display from 10:00 to 10:29)
+    if showORB30 and orb30Display and orb30Formed and not na(orb30High)
+        label.delete(labelORB30H)
+        labelORB30H := label.new(bar_index, orb30High, "ORB-30-H", style=label.style_label_down, color=colorORB30H, textcolor=color.white, size=size.normal)
+    if showORB30 and orb30Display and orb30Formed and not na(orb30Low)
+        label.delete(labelORB30L)
+        labelORB30L := label.new(bar_index, orb30Low, "ORB-30-L", style=label.style_label_down, color=colorORB30L, textcolor=color.white, size=size.normal)
