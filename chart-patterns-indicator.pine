@@ -1,4 +1,4 @@
-//@version=5
+//@version=6
 indicator("Chart Pattern Scanner", overlay=true)
 
 // =========================================================================
@@ -26,49 +26,31 @@ get_size(s) =>
      s == "Normal" ? size.normal : size.large
 
 // =========================================================================
-// PATTERN DEFINITIONS (Calculated on current chart)
+// PATTERN DEFINITIONS (Will be calculated on requested timeframe)
 // =========================================================================
-body = math.abs(close - open)
-upper_wick = high - math.max(open, close)
-lower_wick = math.min(open, close) - low
-full_range = high - low
-
-// 1. Bullish Engulfing
-bull_eng = close[1] < open[1] and close > open and close >= open[1] and open <= close[1] and body > body[1]
-
-// 2. Bearish Engulfing
-bear_eng = close[1] > open[1] and close < open and close <= open[1] and open >= close[1] and body > body[1]
-
-// 3. Hammer / Pin Bar
-hammer = body > 0 and lower_wick >= (body * 2) and upper_wick <= (body * 0.5) and full_range > 0
-
-// 4. Shooting Star
-shoot_star = body > 0 and upper_wick >= (body * 2) and lower_wick <= (body * 0.5) and full_range > 0
-
-// 5. Morning Star
-c1_bear = close[2] < open[2] and math.abs(close[2]-open[2]) > (high[2]-low[2])*0.5
-c2_star_bot = math.abs(close[1]-open[1]) < math.abs(close[2]-open[2])*0.5
-c3_bull = close > open and close > (open[2] + close[2])/2 
-morning_star = c1_bear and c2_star_bot and c3_bull and low[1] < low[2] and low[1] < low
-
-// 6. Evening Star
-c1_bull = close[2] > open[2] and math.abs(close[2]-open[2]) > (high[2]-low[2])*0.5
-c2_star_top = math.abs(close[1]-open[1]) < math.abs(close[2]-open[2])*0.5 
-c3_bear = close < open and close < (open[2] + close[2])/2
-evening_star = c1_bull and c2_star_top and c3_bear and high[1] > high[2] and high[1] > high
+// Note: Pattern logic is embedded directly in request.security() call below
+// to ensure patterns are detected on the selected timeframe, not the chart timeframe
 
 // =========================================================================
-// FETCH DATA FOR SELECTED TIMEFRAME
+// FETCH DATA FOR SELECTED TIMEFRAME (with pattern calculation inline)
 // =========================================================================
-[b_eng_tf, br_eng_tf, ham_tf, ss_tf, ms_tf, es_tf] = request.security(syminfo.tickerid, i_tf, [bull_eng, bear_eng, hammer, shoot_star, morning_star, evening_star])
+[b_eng_tf, br_eng_tf, ham_tf, ss_tf, ms_tf, es_tf] = request.security(syminfo.tickerid, i_tf, [
+     close[1] < open[1] and close > open and close >= open[1] and open <= close[1] and math.abs(close - open) > math.abs(close[1] - open[1]),
+     close[1] > open[1] and close < open and close <= open[1] and open >= close[1] and math.abs(close - open) > math.abs(close[1] - open[1]),
+     math.abs(close - open) > 0 and (math.min(open, close) - low) >= (math.abs(close - open) * 2) and (high - math.max(open, close)) <= (math.abs(close - open) * 0.5) and (high - low) > 0,
+     math.abs(close - open) > 0 and (high - math.max(open, close)) >= (math.abs(close - open) * 2) and (math.min(open, close) - low) <= (math.abs(close - open) * 0.5) and (high - low) > 0,
+     close[2] < open[2] and math.abs(close[2] - open[2]) > (high[2] - low[2]) * 0.5 and math.abs(close[1] - open[1]) < math.abs(close[2] - open[2]) * 0.5 and close > open and close > (open[2] + close[2]) / 2 and low[1] < low[2] and low[1] < low,
+     close[2] > open[2] and math.abs(close[2] - open[2]) > (high[2] - low[2]) * 0.5 and math.abs(close[1] - open[1]) < math.abs(close[2] - open[2]) * 0.5 and close < open and close < (open[2] + close[2]) / 2 and high[1] > high[2] and high[1] > high
+])
 
 // =========================================================================
 // DRAW TABLE
 // =========================================================================
 var tbl = table.new(get_pos(i_pos), 3, 8, border_width=1, border_color=color.new(color.gray, 80), frame_width=1, frame_color=color.new(color.gray, 80), bgcolor=color.new(color.black, 80))
 
-// Helper function for Signals
-get_signal(cond) => cond ? "🟢" : "🔴"
+// Helper function for Signals (takes condition and bias: "bullish" or "bearish")
+get_signal(cond, bias) =>
+    cond ? (bias == "bullish" ? "🟢" : "🔴") : "⚫"
 
 if barstate.islast
     // Headers
@@ -79,33 +61,33 @@ if barstate.islast
     // Row 1: Bullish Engulfing
     table.cell(tbl, 0, 1, "Bullish Engulfing", text_color=color.white, text_size=get_size(i_size))
     table.cell(tbl, 1, 1, "Bullish", text_color=color.green, text_size=get_size(i_size))
-    table.cell(tbl, 2, 1, get_signal(b_eng_tf), text_size=get_size(i_size))
+    table.cell(tbl, 2, 1, get_signal(b_eng_tf, "bullish"), text_size=get_size(i_size))
 
     // Row 2: Bearish Engulfing
     table.cell(tbl, 0, 2, "Bearish Engulfing", text_color=color.white, text_size=get_size(i_size))
     table.cell(tbl, 1, 2, "Bearish", text_color=color.red, text_size=get_size(i_size))
-    table.cell(tbl, 2, 2, get_signal(br_eng_tf), text_size=get_size(i_size))
+    table.cell(tbl, 2, 2, get_signal(br_eng_tf, "bearish"), text_size=get_size(i_size))
 
     // Row 3: Hammer
     table.cell(tbl, 0, 3, "Hammer", text_color=color.white, text_size=get_size(i_size))
     table.cell(tbl, 1, 3, "Bullish", text_color=color.green, text_size=get_size(i_size))
-    table.cell(tbl, 2, 3, get_signal(ham_tf), text_size=get_size(i_size))
+    table.cell(tbl, 2, 3, get_signal(ham_tf, "bullish"), text_size=get_size(i_size))
 
     // Row 4: Shooting Star
     table.cell(tbl, 0, 4, "Shooting Star", text_color=color.white, text_size=get_size(i_size))
     table.cell(tbl, 1, 4, "Bearish", text_color=color.red, text_size=get_size(i_size))
-    table.cell(tbl, 2, 4, get_signal(ss_tf), text_size=get_size(i_size))
+    table.cell(tbl, 2, 4, get_signal(ss_tf, "bearish"), text_size=get_size(i_size))
 
     // Row 5: Morning Star
     table.cell(tbl, 0, 5, "Morning Star", text_color=color.white, text_size=get_size(i_size))
     table.cell(tbl, 1, 5, "Bullish", text_color=color.green, text_size=get_size(i_size))
-    table.cell(tbl, 2, 5, get_signal(ms_tf), text_size=get_size(i_size))
+    table.cell(tbl, 2, 5, get_signal(ms_tf, "bullish"), text_size=get_size(i_size))
 
     // Row 6: Evening Star
     table.cell(tbl, 0, 6, "Evening Star", text_color=color.white, text_size=get_size(i_size))
     table.cell(tbl, 1, 6, "Bearish", text_color=color.red, text_size=get_size(i_size))
-    table.cell(tbl, 2, 6, get_signal(es_tf), text_size=get_size(i_size))
+    table.cell(tbl, 2, 6, get_signal(es_tf, "bearish"), text_size=get_size(i_size))
 
     // Row 7: Legend (Merged across all 3 columns)
     table.merge_cells(tbl, 0, 7, 2, 7)
-    table.cell(tbl, 0, 7, "TF: " + i_tf + "m | 🟢 Detected | 🔴 Not Detected", text_color=color.gray, text_size=get_size("Small"), bgcolor=color.new(color.black, 90))
+    table.cell(tbl, 0, 7, "TF: " + i_tf + "m | 🟢 Bullish | 🔴 Bearish | ⚫ Not Detected", text_color=color.gray, text_size=get_size("Small"), bgcolor=color.new(color.black, 90))
