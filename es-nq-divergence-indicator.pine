@@ -1,0 +1,340 @@
+//@version=6
+indicator("ES/NQ Divergence & Relative Strength", overlay=true)
+
+// =========================================================================
+// OVERVIEW
+// =========================================================================
+// This indicator monitors divergence between ES and NQ futures using
+// two timeframes (HTF and LTF). It also tracks relative strength by
+// comparing both rolling % change and the ES/NQ price ratio.
+//
+// INTERPRETATION GUIDE:
+//   -- Divergence --
+//   "Bullish Divergence" = HTF trend is DOWN but LTF trend is UP.
+//     This suggests the broader trend is weakening and a short-term
+//     reversal higher may occur. Look for long entries if other
+//     confluences align (e.g., price at a key level).
+//
+//   "Bearish Divergence" = HTF trend is UP but LTF trend is DOWN.
+//     This suggests the broader trend is losing momentum and a
+//     short-term reversal lower may occur. Look for short entries
+//     if other confluences align (e.g., price at a key level).
+//
+//   "Convergence (Bullish)" = both HTF and LTF trend UP. Strong
+//     bullish alignment.
+//   "Convergence (Bearish)" = both HTF and LTF trend DOWN. Strong
+//     bearish alignment.
+//
+//   -- Relative Strength --
+//   "ES Stronger" = ES outperforming NQ over the lookback period.
+//     If you are bullish, prefer buying ES. If bearish, prefer
+//     shorting NQ.
+//
+//   "NQ Stronger" = NQ outperforming ES over the lookback period.
+//     If you are bullish, prefer buying NQ. If bearish, prefer
+//     shorting ES.
+//
+//   "Ratio" column shows the current ES/NQ price ratio. A rising
+//   ratio means ES is gaining relative strength; a falling ratio
+//   means NQ is gaining relative strength.
+// =========================================================================
+
+// =========================================================================
+// CONSTANTS
+// =========================================================================
+// Default tickers for ES and NQ continuous futures
+string ES_TICKER = "CME_MINI:ES1!"
+string NQ_TICKER = "CME_MINI:NQ1!"
+
+// =========================================================================
+// INPUTS
+// =========================================================================
+// --- Timeframes ---
+grp_timeframes = "Timeframes"
+i_htf = input.timeframe("60", title="Higher Timeframe (HTF)", group=grp_timeframes)
+i_ltf = input.timeframe("15", title="Lower Timeframe (LTF)", group=grp_timeframes)
+
+// --- Lookback ---
+grp_lookback = "Lookback"
+i_lookback_htf = input.int(5, "HTF Lookback (bars)", minval=2, maxval=50, group=grp_lookback)
+i_lookback_ltf = input.int(5, "LTF Lookback (bars)", minval=2, maxval=50, group=grp_lookback)
+i_rs_lookback = input.int(10, "Relative Strength Lookback (bars)", minval=2, maxval=100, group=grp_lookback)
+
+// --- Table ---
+grp_table = "Table Settings"
+i_pos  = input.string("Bottom Right", title="Table Position",
+   options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right", "Middle Left"],
+   group=grp_table)
+i_size = input.string("Normal", title="Font Size",
+   options=["Auto", "Tiny", "Small", "Normal", "Large"],
+   group=grp_table)
+i_bg   = input.color(color.new(color.black, 70), "Table Background", group=grp_table)
+
+// =========================================================================
+// UTILITY FUNCTIONS
+// =========================================================================
+// Translates user-friendly position string to Pine table position enum
+getPosition(p) =>
+    if p == "Top Right"
+        position.top_right
+    else if p == "Top Left"
+        position.top_left
+    else if p == "Bottom Right"
+        position.bottom_right
+    else if p == "Bottom Left"
+        position.bottom_left
+    else if p == "Middle Right"
+        position.middle_right
+    else
+        position.middle_left
+
+// Translates user-friendly font size string to Pine size enum
+getFontSize(s) =>
+    if s == "Auto"
+        size.auto
+    else if s == "Tiny"
+        size.tiny
+    else if s == "Small"
+        size.small
+    else if s == "Normal"
+        size.normal
+    else
+        size.large
+
+// Returns a colored arrow indicator for divergence/convergence
+getArrow(direction, strength) =>
+    if direction == 1 and strength == 1
+        "▲"
+    else if direction == 1 and strength == 0
+        "△"
+    else if direction == -1 and strength == 1
+        "▼"
+    else if direction == -1 and strength == 0
+        "▽"
+    else
+        "●"
+
+// Returns color for divergence/convergence status
+getColor(direction, strength) =>
+    if direction == 1 and strength == 1
+        color.green
+    else if direction == 1 and strength == 0
+        color.lime
+    else if direction == -1 and strength == 1
+        color.red
+    else if direction == -1 and strength == 0
+        color.maroon
+    else
+        color.gray
+
+// Returns a font size one step smaller than the main size for footer text
+getFooterSize(s) =>
+    if s == "Auto"
+        size.auto
+    else if s == "Tiny"
+        size.tiny
+    else if s == "Small"
+        size.small
+    else if s == "Normal"
+        size.small
+    else
+        size.normal
+
+// Returns a textual label for the divergence state
+getDivLabel(direction, strength) =>
+    if direction == 1 and strength == 1
+        "Conv (Bull)"
+    else if direction == 1 and strength == 0
+        "Dive (Bull)"
+    else if direction == -1 and strength == 1
+        "Conv (Bear)"
+    else if direction == -1 and strength == 0
+        "Dive (Bear)"
+    else
+        "Neutral"
+
+// =========================================================================
+// TREND DIRECTION HELPER
+// =========================================================================
+// Determines trend direction (1 = up, -1 = down, 0 = flat) using
+// simple moving average slope over N periods.
+getTrend(src, length) =>
+    float ma = ta.sma(src, length)
+    // Compare current MA to MA from `length` bars ago
+    float slope = ma - ma[length]
+    // Use a small threshold to filter out noise
+    float threshold = ta.atr(length) * 0.1
+    if slope > threshold
+        1
+    else if slope < -threshold
+        -1
+    else
+        0
+
+// =========================================================================
+// DATA FETCHING
+// =========================================================================
+// Fetch ES and NQ close prices on chart timeframe (for relative strength)
+es_close  = request.security(ES_TICKER, timeframe.period, close)
+nq_close  = request.security(NQ_TICKER, timeframe.period, close)
+
+// Fetch ES and NQ close prices on LTF and HTF (for divergence)
+es_ltf_close = request.security(ES_TICKER, i_ltf, close)
+es_htf_close = request.security(ES_TICKER, i_htf, close)
+nq_ltf_close = request.security(NQ_TICKER, i_ltf, close)
+nq_htf_close = request.security(NQ_TICKER, i_htf, close)
+
+// =========================================================================
+// RELATIVE STRENGTH CALCULATIONS (based on chart timeframe)
+// =========================================================================
+// -- Rolling % Change --
+es_pct_change = (es_close - es_close[i_rs_lookback]) / es_close[i_rs_lookback] * 100
+nq_pct_change = (nq_close - nq_close[i_rs_lookback]) / nq_close[i_rs_lookback] * 100
+
+// Determine which is stronger: 1 = ES, -1 = NQ, 0 = even
+float rs_diff = es_pct_change - nq_pct_change
+int rs_bias = rs_diff > 0.1 ? 1 : rs_diff < -0.1 ? -1 : 0
+
+// -- Price Ratio --
+float ratio = es_close / nq_close
+// Smooth the ratio to show trend
+float ratio_sma = ta.sma(ratio, i_rs_lookback)
+int ratio_trend = ratio > ratio_sma ? 1 : ratio < ratio_sma ? -1 : 0
+
+// =========================================================================
+// DIVERGENCE CALCULATIONS
+// =========================================================================
+// ES divergence: compare HTF trend vs LTF trend
+int es_htf_trend = getTrend(es_htf_close, i_lookback_htf)
+int es_ltf_trend = getTrend(es_ltf_close, i_lookback_ltf)
+int es_div_dir   = 0  // 1 = bullish, -1 = bearish
+int es_div_str   = 0  // 1 = convergence, 0 = divergence
+if es_htf_trend == 1 and es_ltf_trend == 1
+    es_div_dir := 1
+    es_div_str := 1
+else if es_htf_trend == -1 and es_ltf_trend == -1
+    es_div_dir := -1
+    es_div_str := 1
+else if es_htf_trend == -1 and es_ltf_trend == 1
+    es_div_dir := 1
+    es_div_str := 0
+else if es_htf_trend == 1 and es_ltf_trend == -1
+    es_div_dir := -1
+    es_div_str := 0
+
+// NQ divergence
+int nq_htf_trend = getTrend(nq_htf_close, i_lookback_htf)
+int nq_ltf_trend = getTrend(nq_ltf_close, i_lookback_ltf)
+int nq_div_dir   = 0
+int nq_div_str   = 0
+if nq_htf_trend == 1 and nq_ltf_trend == 1
+    nq_div_dir := 1
+    nq_div_str := 1
+else if nq_htf_trend == -1 and nq_ltf_trend == -1
+    nq_div_dir := -1
+    nq_div_str := 1
+else if nq_htf_trend == -1 and nq_ltf_trend == 1
+    nq_div_dir := 1
+    nq_div_str := 0
+else if nq_htf_trend == 1 and nq_ltf_trend == -1
+    nq_div_dir := -1
+    nq_div_str := 0
+
+// =========================================================================
+// TABLE CONSTRUCTION
+// =========================================================================
+// Table layout:
+//   Col 0: Metric name (left-aligned)
+//   Col 1: Value / Signal
+//   Col 2: Detail / Arrow
+//
+// Rows:
+//   0: Title "ES / NQ Data Points" (merged)
+//   1: Column headers
+//   2: ES Divergence
+//   3: NQ Divergence
+//   4: RelStrength
+//   5: Price Ratio
+//   6: Ratio trend
+//   7: ES Trend detail
+//   8: Footer (legend, merged)
+
+var table tbl = table.new(getPosition(i_pos), 3, 9,
+   border_width=1, border_color=color.new(color.gray, 60),
+   frame_width=1, frame_color=color.new(color.gray, 60),
+   bgcolor=i_bg)
+
+if barstate.islast
+    // -- Row 0: Title (merged across all columns) --
+    table.merge_cells(tbl, 0, 0, 2, 0)
+    table.cell(tbl, 0, 0, "ES / NQ Data Points",
+       text_color=color.white, bgcolor=color.new(color.blue, 50),
+       text_size=getFontSize(i_size), text_halign=text.align_center)
+
+    // -- Row 1: Column Headers --
+    table.cell(tbl, 0, 1, "Metric",   text_color=color.white, bgcolor=color.new(color.blue, 60),
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.cell(tbl, 1, 1, "Status",   text_color=color.white, bgcolor=color.new(color.blue, 60),
+       text_size=getFontSize(i_size))
+    table.cell(tbl, 2, 1, "Signal",   text_color=color.white, bgcolor=color.new(color.blue, 60),
+       text_size=getFontSize(i_size))
+
+    // -- Row 2: ES Divergence --
+    table.cell(tbl, 0, 2, "ES Divergence", text_color=color.white,
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.cell(tbl, 1, 2, getDivLabel(es_div_dir, es_div_str),
+       text_color=getColor(es_div_dir, es_div_str), text_size=getFontSize(i_size))
+    table.cell(tbl, 2, 2, getArrow(es_div_dir, es_div_str),
+       text_color=getColor(es_div_dir, es_div_str), text_size=getFontSize(i_size))
+
+    // -- Row 3: NQ Divergence --
+    table.cell(tbl, 0, 3, "NQ Divergence", text_color=color.white,
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.cell(tbl, 1, 3, getDivLabel(nq_div_dir, nq_div_str),
+       text_color=getColor(nq_div_dir, nq_div_str), text_size=getFontSize(i_size))
+    table.cell(tbl, 2, 3, getArrow(nq_div_dir, nq_div_str),
+       text_color=getColor(nq_div_dir, nq_div_str), text_size=getFontSize(i_size))
+
+    // -- Row 4: Relative Strength --
+    string rs_label = rs_bias == 1 ? "ES Stronger" : rs_bias == -1 ? "NQ Stronger" : "Even"
+    color rs_color  = rs_bias == 1 ? color.green : rs_bias == -1 ? color.red : color.gray
+    table.cell(tbl, 0, 4, "Rel. Strength", text_color=color.white,
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.cell(tbl, 1, 4, rs_label, text_color=rs_color, text_size=getFontSize(i_size))
+    table.cell(tbl, 2, 4, rs_bias == 1 ? "ES" : rs_bias == -1 ? "NQ" : "--",
+       text_color=rs_color, text_size=getFontSize(i_size))
+
+    // -- Row 5: ES/NQ Price Ratio --
+    string ratio_str = "ES/NQ: " + str.tostring(ratio, "#.00000")
+    table.cell(tbl, 0, 5, "Price Ratio", text_color=color.white,
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.merge_cells(tbl, 1, 5, 2, 5)
+    table.cell(tbl, 1, 5, ratio_str, text_color=color.yellow, text_size=getFontSize(i_size))
+
+    // -- Row 6: Ratio Trend --
+    string rt_label = ratio_trend == 1 ? "ES gaining" : ratio_trend == -1 ? "NQ gaining" : "Flat"
+    color rt_color  = ratio_trend == 1 ? color.green : ratio_trend == -1 ? color.red : color.gray
+    table.cell(tbl, 0, 6, "Ratio Trend", text_color=color.white,
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.merge_cells(tbl, 1, 6, 2, 6)
+    table.cell(tbl, 1, 6, rt_label, text_color=rt_color, text_size=getFontSize(i_size))
+
+    // -- Row 7: ES Trend Detail --
+    string es_dir_label = es_div_dir == 1 ? "UP" : es_div_dir == -1 ? "DN" : "--"
+    string es_htf_label = "ES HTF:" + es_dir_label
+    string ltf_dir_label = es_ltf_trend == 1 ? "UP" : es_ltf_trend == -1 ? "DN" : "--"
+    string ltf_label = " LTF:" + ltf_dir_label
+    table.cell(tbl, 0, 7, "ES Trend", text_color=color.white,
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.merge_cells(tbl, 1, 7, 2, 7)
+    table.cell(tbl, 1, 7, es_htf_label + ltf_label,
+       text_color=color.gray, text_size=getFontSize(i_size))
+
+    // -- Row 8: Footer / Legend --
+    table.merge_cells(tbl, 0, 8, 2, 8)
+    string footer_text = "HTF: " + i_htf + " | LTF: " + i_ltf
+       + " | RS: " + str.tostring(i_rs_lookback) + " bars"
+       + " | ▲ ConvBull | ▼ ConvBear | △ DiveBull | ▽ DiveBear | ● Neutral"
+    table.cell(tbl, 0, 8, footer_text,
+       text_color=color.gray, text_size=getFooterSize(i_size),
+       bgcolor=color.new(color.black, 90))
