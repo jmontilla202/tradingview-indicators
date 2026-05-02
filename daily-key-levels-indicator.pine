@@ -5,8 +5,8 @@ indicator("Daily Key Levels", overlay=true, max_lines_count=500, max_labels_coun
 // Display toggles
 showPD = input.bool(true, "Show Previous Day", group="Display")
 showPW = input.bool(true, "Show Previous Week", group="Display")
-showIB = input.bool(true, "Show Initial Balance (9:30-10:30)", group="Display")
-showORB30 = input.bool(true, "Show 30-Min ORB (10:00-10:29)", group="Display")
+showIB = input.bool(true, "Show Initial Balance", group="Display")
+showORB30 = input.bool(true, "Show 30-Min ORB", group="Display")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
@@ -71,8 +71,8 @@ if inRTH
     rthClose := close
 
 // ===== CALCULATE PREVIOUS WEEK HIGH/LOW =====
-pwh = request.security(syminfo.tickerid, "W", high[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
-pwl = request.security(syminfo.tickerid, "W", low[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+var float pwh = request.security(syminfo.tickerid, "W", high[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+var float pwl = request.security(syminfo.tickerid, "W", low[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
 
 // ===== CALCULATE INITIAL BALANCE (9:30-10:30) =====
 var float ibHigh = na
