@@ -63,7 +63,7 @@ i_rs_lookback = input.int(10, "Relative Strength Lookback (bars)", minval=2, max
 // --- Table ---
 grp_table = "Table Settings"
 i_pos  = input.string("Bottom Right", title="Table Position",
-   options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Middle Right", "Middle Left"],
+   options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"],
    group=grp_table)
 i_size = input.string("Normal", title="Font Size",
    options=["Auto", "Tiny", "Small", "Normal", "Large"],
@@ -79,12 +79,18 @@ getPosition(p) =>
         position.top_right
     else if p == "Top Left"
         position.top_left
+    else if p == "Top Center"
+        position.top_center
     else if p == "Bottom Right"
         position.bottom_right
     else if p == "Bottom Left"
         position.bottom_left
+    else if p == "Bottom Center"
+        position.bottom_center
     else if p == "Middle Right"
         position.middle_right
+    else if p == "Middle Center"
+        position.middle_center
     else
         position.middle_left
 
@@ -127,19 +133,6 @@ getColor(direction, strength) =>
     else
         color.gray
 
-// Returns a font size one step smaller than the main size for footer text
-getFooterSize(s) =>
-    if s == "Auto"
-        size.auto
-    else if s == "Tiny"
-        size.tiny
-    else if s == "Small"
-        size.small
-    else if s == "Normal"
-        size.small
-    else
-        size.normal
-
 // Returns a textual label for the divergence state
 getDivLabel(direction, strength) =>
     if direction == 1 and strength == 1
@@ -159,17 +152,35 @@ getDivLabel(direction, strength) =>
 // Determines trend direction (1 = up, -1 = down, 0 = flat) using
 // simple moving average slope over N periods.
 getTrend(src, length) =>
-    float ma = ta.sma(src, length)
-    // Compare current MA to MA from `length` bars ago
-    float slope = ma - ma[length]
-    // Use a small threshold to filter out noise
-    float threshold = ta.atr(length) * 0.1
-    if slope > threshold
-        1
-    else if slope < -threshold
-        -1
-    else
+    if na(src)
         0
+    else
+        float ma = ta.sma(src, length)
+        // Compare current MA to MA from `length` bars ago
+        float slope = ma - ma[length]
+        // Use 0.05% of price level as noise threshold (avoids chart-symbol ATR mismatch)
+        float threshold = math.abs(ma) * 0.0005
+        if slope > threshold
+            1
+        else if slope < -threshold
+            -1
+        else
+            0
+
+// Classifies HTF vs LTF trend alignment into [direction, strength].
+// direction: 1 = bullish, -1 = bearish, 0 = neutral
+// strength:  1 = convergence (trends align), 0 = divergence (trends conflict)
+classifyDiv(htfTrend, ltfTrend) =>
+    if htfTrend == 1 and ltfTrend == 1
+        [1, 1]
+    else if htfTrend == -1 and ltfTrend == -1
+        [-1, 1]
+    else if htfTrend == -1 and ltfTrend == 1
+        [1, 0]
+    else if htfTrend == 1 and ltfTrend == -1
+        [-1, 0]
+    else
+        [0, 0]
 
 // =========================================================================
 // DATA FETCHING
@@ -207,38 +218,12 @@ int ratio_trend = ratio > ratio_sma ? 1 : ratio < ratio_sma ? -1 : 0
 // ES divergence: compare HTF trend vs LTF trend
 int es_htf_trend = getTrend(es_htf_close, i_lookback_htf)
 int es_ltf_trend = getTrend(es_ltf_close, i_lookback_ltf)
-int es_div_dir   = 0  // 1 = bullish, -1 = bearish
-int es_div_str   = 0  // 1 = convergence, 0 = divergence
-if es_htf_trend == 1 and es_ltf_trend == 1
-    es_div_dir := 1
-    es_div_str := 1
-else if es_htf_trend == -1 and es_ltf_trend == -1
-    es_div_dir := -1
-    es_div_str := 1
-else if es_htf_trend == -1 and es_ltf_trend == 1
-    es_div_dir := 1
-    es_div_str := 0
-else if es_htf_trend == 1 and es_ltf_trend == -1
-    es_div_dir := -1
-    es_div_str := 0
+[es_div_dir, es_div_str] = classifyDiv(es_htf_trend, es_ltf_trend)
 
 // NQ divergence
 int nq_htf_trend = getTrend(nq_htf_close, i_lookback_htf)
 int nq_ltf_trend = getTrend(nq_ltf_close, i_lookback_ltf)
-int nq_div_dir   = 0
-int nq_div_str   = 0
-if nq_htf_trend == 1 and nq_ltf_trend == 1
-    nq_div_dir := 1
-    nq_div_str := 1
-else if nq_htf_trend == -1 and nq_ltf_trend == -1
-    nq_div_dir := -1
-    nq_div_str := 1
-else if nq_htf_trend == -1 and nq_ltf_trend == 1
-    nq_div_dir := 1
-    nq_div_str := 0
-else if nq_htf_trend == 1 and nq_ltf_trend == -1
-    nq_div_dir := -1
-    nq_div_str := 0
+[nq_div_dir, nq_div_str] = classifyDiv(nq_htf_trend, nq_ltf_trend)
 
 // =========================================================================
 // TABLE CONSTRUCTION
@@ -257,9 +242,10 @@ else if nq_htf_trend == 1 and nq_ltf_trend == -1
 //   5: Price Ratio
 //   6: Ratio trend
 //   7: ES Trend detail
-//   8: Footer (legend, merged)
+//   8: NQ Trend detail
+//   9: Footer (legend, merged)
 
-var table tbl = table.new(getPosition(i_pos), 3, 9,
+var table tbl = table.new(getPosition(i_pos), 3, 10,
    border_width=1, border_color=color.new(color.gray, 60),
    frame_width=1, frame_color=color.new(color.gray, 60),
    bgcolor=i_bg)
@@ -330,11 +316,20 @@ if barstate.islast
     table.cell(tbl, 1, 7, es_htf_label + ltf_label,
        text_color=color.gray, text_size=getFontSize(i_size))
 
-    // -- Row 8: Footer / Legend --
-    table.merge_cells(tbl, 0, 8, 2, 8)
+    // -- Row 8: NQ Trend Detail --
+    string nq_htf_label = "NQ HTF:" + (nq_htf_trend == 1 ? "UP" : nq_htf_trend == -1 ? "DN" : "--")
+    string nq_ltf_label = " LTF:" + (nq_ltf_trend == 1 ? "UP" : nq_ltf_trend == -1 ? "DN" : "--")
+    table.cell(tbl, 0, 8, "NQ Trend", text_color=color.white,
+       text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.merge_cells(tbl, 1, 8, 2, 8)
+    table.cell(tbl, 1, 8, nq_htf_label + nq_ltf_label,
+       text_color=color.gray, text_size=getFontSize(i_size))
+
+    // -- Row 9: Footer / Legend --
+    table.merge_cells(tbl, 0, 9, 2, 9)
     string footer_text = "HTF: " + i_htf + " | LTF: " + i_ltf
        + " | RS: " + str.tostring(i_rs_lookback) + " bars"
        + " | ▲ ConvBull | ▼ ConvBear | △ DiveBull | ▽ DiveBear | ● Neutral"
-    table.cell(tbl, 0, 8, footer_text,
-       text_color=color.gray, text_size=getFooterSize(i_size),
+    table.cell(tbl, 0, 9, footer_text,
+       text_color=color.gray, text_size=i_size == "Large" ? size.normal : size.small,
        bgcolor=color.new(color.black, 90))
