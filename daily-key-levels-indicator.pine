@@ -15,6 +15,7 @@ colorPWH = input.color(color.new(color.purple, 0), "PWH Color", group="Colors")
 colorPWL = input.color(color.new(color.purple, 0), "PWL Color", group="Colors")
 colorIBH = input.color(color.new(color.blue, 0), "IBH Color", group="Colors")
 colorIBL = input.color(color.new(color.blue, 0), "IBL Color", group="Colors")
+colorIBM = input.color(color.new(color.orange, 0), "IBM Color", group="Colors")
 colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="Colors")
 colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
 
@@ -123,6 +124,7 @@ var line linePWH = na
 var line linePWL = na
 var line lineIBH = na
 var line lineIBL = na
+var line lineIBM = na
 var line lineORB30H = na
 var line lineORB30L = na
 
@@ -152,6 +154,11 @@ if barstate.islast
     if showIB and ibDisplay and not na(ibLow)
         line.delete(lineIBL)
         lineIBL := line.new(startBar, ibLow, bar_index, ibLow, color=colorIBL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    // IBM (Initial Balance Middle) = midpoint between IBH and IBL
+    if showIB and ibDisplay and not na(ibHigh) and not na(ibLow)
+        float ibm = (ibHigh + ibLow) / 2
+        line.delete(lineIBM)
+        lineIBM := line.new(startBar, ibm, bar_index, ibm, color=colorIBM, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
     // ORB-30 levels (display from 10:00 to 10:29)
     if showORB30 and orb30Display and orb30Formed and not na(orb30High)
@@ -168,6 +175,7 @@ var label labelPWH = na
 var label labelPWL = na
 var label labelIBH = na
 var label labelIBL = na
+var label labelIBM = na
 var label labelORB30H = na
 var label labelORB30L = na
 
@@ -195,6 +203,11 @@ if barstate.islast
     if showIB and ibDisplay and not na(ibLow)
         label.delete(labelIBL)
         labelIBL := label.new(bar_index, ibLow, "IBL", style=label.style_label_down, color=colorIBL, textcolor=color.white, size=size.normal)
+    // IBM label (midpoint between IBH and IBL)
+    if showIB and ibDisplay and not na(ibHigh) and not na(ibLow)
+        float ibm = (ibHigh + ibLow) / 2
+        label.delete(labelIBM)
+        labelIBM := label.new(bar_index, ibm, "IBM", style=label.style_label_down, color=colorIBM, textcolor=color.white, size=size.normal)
 
     // ORB-30 labels (display from 10:00 to 10:29)
     if showORB30 and orb30Display and orb30Formed and not na(orb30High)
