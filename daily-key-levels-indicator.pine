@@ -5,8 +5,9 @@ indicator("Daily Key Levels", overlay=true, max_lines_count=500, max_labels_coun
 // Display toggles
 showPD = input.bool(true, "Show Previous Day", group="Display")
 showPW = input.bool(true, "Show Previous Week", group="Display")
-showIB = input.bool(true, "Show Initial Balance", group="Display")
-showORB30 = input.bool(true, "Show 30-Min ORB", group="Display")
+showIB = input.bool(true, "Show Initial Balance (9:30-10:30)", group="Display")
+showORB30 = input.bool(true, "Show 30-Min ORB (10:00-10:29)", group="Display")
+showWM = input.bool(true, "Show Weekly Model", group="Display")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
@@ -18,6 +19,8 @@ colorIBL = input.color(color.new(color.blue, 0), "IBL Color", group="Colors")
 colorIBM = input.color(color.new(color.orange, 0), "IBM Color", group="Colors")
 colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="Colors")
 colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
+colorWMH = input.color(color.new(color.yellow, 0), "WM High Color", group="Colors")
+colorWML = input.color(color.new(color.yellow, 0), "WM Low Color", group="Colors")
 
 // Line Style & Width
 lineStyle = input.string(title="Line Style", defval="Dashed", options=["Solid", "Dashed", "Dotted"], group="Line Style")
@@ -117,6 +120,25 @@ if inOrb30Window
 if not inOrb30Window and inOrb30Window[1] and not na(orb30High)
     orb30Formed := true
 
+// ===== CALCULATE WEEKLY MODEL (Sun 18:00 ET - Tue 16:00 ET) =====
+var float wmHigh = na
+var float wmLow = na
+dowET = dayofweek(time, "America/New_York")
+inWMWindow = (dowET == 1 and hourET >= 18) or dowET == 2 or (dowET == 3 and (hourET < 16 or (hourET == 16 and minuteET == 0)))
+wmDisplay = (dowET >= 4 and dowET <= 6) and inRTH
+
+if inWMWindow and not inWMWindow[1]
+    wmHigh := na
+    wmLow := na
+
+if inWMWindow
+    if na(wmHigh)
+        wmHigh := high
+        wmLow := low
+    else
+        wmHigh := math.max(wmHigh, high)
+        wmLow := math.min(wmLow, low)
+
 // ===== PLOT LEVELS AS RAYS =====
 var line linePDH = na
 var line linePDL = na
@@ -127,6 +149,8 @@ var line lineIBL = na
 var line lineIBM = na
 var line lineORB30H = na
 var line lineORB30L = na
+var line lineWMH = na
+var line lineWML = na
 
 if barstate.islast
     startBar = bar_index - 48
@@ -168,6 +192,14 @@ if barstate.islast
         line.delete(lineORB30L)
         lineORB30L := line.new(startBar, orb30Low, bar_index, orb30Low, color=colorORB30L, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
+    // Weekly Model levels (display Wed-Fri during RTH)
+    if showWM and wmDisplay and not na(wmHigh)
+        line.delete(lineWMH)
+        lineWMH := line.new(startBar, wmHigh, bar_index, wmHigh, color=colorWMH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showWM and wmDisplay and not na(wmLow)
+        line.delete(lineWML)
+        lineWML := line.new(startBar, wmLow, bar_index, wmLow, color=colorWML, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
 // ===== LABELS =====
 var label labelPDH = na
 var label labelPDL = na
@@ -178,6 +210,8 @@ var label labelIBL = na
 var label labelIBM = na
 var label labelORB30H = na
 var label labelORB30L = na
+var label labelWMH = na
+var label labelWML = na
 
 if barstate.islast
     // Previous Day labels
@@ -216,3 +250,11 @@ if barstate.islast
     if showORB30 and orb30Display and orb30Formed and not na(orb30Low)
         label.delete(labelORB30L)
         labelORB30L := label.new(bar_index, orb30Low, "ORB-30-L", style=label.style_label_down, color=colorORB30L, textcolor=color.white, size=size.normal)
+
+    // Weekly Model labels (display Wed-Fri during RTH)
+    if showWM and wmDisplay and not na(wmHigh)
+        label.delete(labelWMH)
+        labelWMH := label.new(bar_index, wmHigh, "WMH", style=label.style_label_down, color=colorWMH, textcolor=color.white, size=size.normal)
+    if showWM and wmDisplay and not na(wmLow)
+        label.delete(labelWML)
+        labelWML := label.new(bar_index, wmLow, "WML", style=label.style_label_down, color=colorWML, textcolor=color.white, size=size.normal)
