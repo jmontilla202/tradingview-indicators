@@ -8,10 +8,13 @@ showPW = input.bool(true, "Show Previous Week", group="Display")
 showIB = input.bool(true, "Show Initial Balance (9:30-10:30)", group="Display")
 showORB30 = input.bool(true, "Show 30-Min ORB (10:00-10:29)", group="Display")
 showWM = input.bool(true, "Show Weekly Model", group="Display")
+showOV = input.bool(true, "Show Overnight High/Low (OVH/OVL)", group="Display")
+showRTHOHL = input.bool(true, "Show RTH OHL", group="Display")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
 colorPDL = input.color(color.new(color.green, 0), "PDL Color", group="Colors")
+colorPDC = input.color(color.new(color.gray, 0), "PDC Color", group="Colors")
 colorPWH = input.color(color.new(color.purple, 0), "PWH Color", group="Colors")
 colorPWL = input.color(color.new(color.purple, 0), "PWL Color", group="Colors")
 colorIBH = input.color(color.new(color.blue, 0), "IBH Color", group="Colors")
@@ -21,6 +24,11 @@ colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="
 colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
 colorWMH = input.color(color.new(color.yellow, 0), "WM High Color", group="Colors")
 colorWML = input.color(color.new(color.yellow, 0), "WM Low Color", group="Colors")
+colorOVH = input.color(color.new(color.orange, 0), "OVH Color", group="Colors")
+colorOVL = input.color(color.new(color.orange, 0), "OVL Color", group="Colors")
+colorRTHO = input.color(color.new(color.aqua, 0), "RTH Open Color", group="Colors")
+colorRTHH = input.color(color.new(color.aqua, 0), "RTH High Color", group="Colors")
+colorRTHL = input.color(color.new(color.aqua, 0), "RTH Low Color", group="Colors")
 
 // Line Style & Width
 lineStyle = input.string(title="Line Style", defval="Dashed", options=["Solid", "Dashed", "Dotted"], group="Line Style")
@@ -55,10 +63,12 @@ var float rthLow = na
 var float rthClose = na
 var float pdh = na
 var float pdl = na
+var float pdc = na
 
 if newDay and not na(rthHigh)
     pdh := rthHigh
     pdl := rthLow
+    pdc := rthClose
     rthOpen := na
     rthHigh := na
     rthLow := na
@@ -127,6 +137,9 @@ dowET = dayofweek(time, "America/New_York")
 inWMWindow = (dowET == 1 and hourET >= 18) or dowET == 2 or (dowET == 3 and (hourET < 16 or (hourET == 16 and minuteET == 0)))
 wmDisplay = (dowET >= 4 and dowET <= 6) and inRTH
 
+// Overnight window: 9:00pm ET to 9:29am ET (Globex/Asian/London/premarket)
+inOvernightWindow = (hourET >= 21) or (hourET < 9) or (hourET == 9 and minuteET < 30)
+
 if inWMWindow and not inWMWindow[1]
     wmHigh := na
     wmLow := na
@@ -139,9 +152,26 @@ if inWMWindow
         wmHigh := math.max(wmHigh, high)
         wmLow := math.min(wmLow, low)
 
+// ===== CALCULATE OVERNIGHT HIGH/LOW (9:00pm - 9:29am ET) =====
+var float ovh = na
+var float ovl = na
+
+if inOvernightWindow and not inOvernightWindow[1]
+    ovh := na
+    ovl := na
+
+if inOvernightWindow
+    if na(ovh)
+        ovh := high
+        ovl := low
+    else
+        ovh := math.max(ovh, high)
+        ovl := math.min(ovl, low)
+
 // ===== PLOT LEVELS AS RAYS =====
 var line linePDH = na
 var line linePDL = na
+var line linePDC = na
 var line linePWH = na
 var line linePWL = na
 var line lineIBH = na
@@ -151,6 +181,11 @@ var line lineORB30H = na
 var line lineORB30L = na
 var line lineWMH = na
 var line lineWML = na
+var line lineOVH = na
+var line lineOVL = na
+var line lineRTHO = na
+var line lineRTHH = na
+var line lineRTHL = na
 
 if barstate.islast
     startBar = bar_index - 48
@@ -162,6 +197,9 @@ if barstate.islast
     if showPD and not na(pdl)
         line.delete(linePDL)
         linePDL := line.new(startBar, pdl, bar_index, pdl, color=colorPDL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showPD and not na(pdc)
+        line.delete(linePDC)
+        linePDC := line.new(startBar, pdc, bar_index, pdc, color=colorPDC, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
     // Previous Week levels
     if showPW and not na(pwh)
@@ -200,9 +238,29 @@ if barstate.islast
         line.delete(lineWML)
         lineWML := line.new(startBar, wmLow, bar_index, wmLow, color=colorWML, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
+    // Overnight High/Low levels (display only during RTH 9:30-16:00)
+    if showOV and inRTH and not na(ovh)
+        line.delete(lineOVH)
+        lineOVH := line.new(startBar, ovh, bar_index, ovh, color=colorOVH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showOV and inRTH and not na(ovl)
+        line.delete(lineOVL)
+        lineOVL := line.new(startBar, ovl, bar_index, ovl, color=colorOVL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
+    // RTH OHL (display only during RTH 9:30-16:00)
+    if showRTHOHL and inRTH and not na(rthOpen)
+        line.delete(lineRTHO)
+        lineRTHO := line.new(startBar, rthOpen, bar_index, rthOpen, color=colorRTHO, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showRTHOHL and inRTH and not na(rthHigh)
+        line.delete(lineRTHH)
+        lineRTHH := line.new(startBar, rthHigh, bar_index, rthHigh, color=colorRTHH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showRTHOHL and inRTH and not na(rthLow)
+        line.delete(lineRTHL)
+        lineRTHL := line.new(startBar, rthLow, bar_index, rthLow, color=colorRTHL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
 // ===== LABELS =====
 var label labelPDH = na
 var label labelPDL = na
+var label labelPDC = na
 var label labelPWH = na
 var label labelPWL = na
 var label labelIBH = na
@@ -212,6 +270,11 @@ var label labelORB30H = na
 var label labelORB30L = na
 var label labelWMH = na
 var label labelWML = na
+var label labelOVH = na
+var label labelOVL = na
+var label labelRTHO = na
+var label labelRTHH = na
+var label labelRTHL = na
 
 if barstate.islast
     // Previous Day labels
@@ -221,6 +284,9 @@ if barstate.islast
     if showPD and not na(pdl)
         label.delete(labelPDL)
         labelPDL := label.new(bar_index, pdl, "PDL", style=label.style_label_down, color=colorPDL, textcolor=color.white, size=size.normal)
+    if showPD and not na(pdc)
+        label.delete(labelPDC)
+        labelPDC := label.new(bar_index, pdc, "PDC", style=label.style_label_down, color=colorPDC, textcolor=color.white, size=size.normal)
 
     // Previous Week labels
     if showPW and not na(pwh)
@@ -258,3 +324,22 @@ if barstate.islast
     if showWM and wmDisplay and not na(wmLow)
         label.delete(labelWML)
         labelWML := label.new(bar_index, wmLow, "WML", style=label.style_label_down, color=colorWML, textcolor=color.white, size=size.normal)
+
+    // Overnight High/Low labels (display only during RTH 9:30-16:00)
+    if showOV and inRTH and not na(ovh)
+        label.delete(labelOVH)
+        labelOVH := label.new(bar_index, ovh, "OVH", style=label.style_label_down, color=colorOVH, textcolor=color.white, size=size.normal)
+    if showOV and inRTH and not na(ovl)
+        label.delete(labelOVL)
+        labelOVL := label.new(bar_index, ovl, "OVL", style=label.style_label_down, color=colorOVL, textcolor=color.white, size=size.normal)
+
+    // RTH OHL labels (display only during RTH 9:30-16:00)
+    if showRTHOHL and inRTH and not na(rthOpen)
+        label.delete(labelRTHO)
+        labelRTHO := label.new(bar_index, rthOpen, "Open", style=label.style_label_down, color=colorRTHO, textcolor=color.white, size=size.normal)
+    if showRTHOHL and inRTH and not na(rthHigh)
+        label.delete(labelRTHH)
+        labelRTHH := label.new(bar_index, rthHigh, "High", style=label.style_label_down, color=colorRTHH, textcolor=color.white, size=size.normal)
+    if showRTHOHL and inRTH and not na(rthLow)
+        label.delete(labelRTHL)
+        labelRTHL := label.new(bar_index, rthLow, "Low", style=label.style_label_down, color=colorRTHL, textcolor=color.white, size=size.normal)
