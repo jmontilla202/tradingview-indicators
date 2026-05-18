@@ -9,6 +9,7 @@ Flat repo of standalone Pine Script v6 indicators. Each `.pine` file is a comple
 | `chart-patterns-indicator.pine` | Chart Pattern Scanner | Candle pattern detection (engulfing, hammer, shooting star, morning/evening star) on a user-selectable timeframe |
 | `daily-key-levels-indicator.pine` | Daily Key Levels | PDH/PDL, PWH/PWL, Initial Balance (9:30-10:30), ORB-30 (9:30-10:00) with ET timezone session logic |
 | `es-nq-divergence-indicator.pine` | ES/NQ Divergence & Relative Strength | Multi-timeframe divergence analysis between ES and NQ futures, relative strength comparison, price ratio tracking |
+| `al-brooks-price-action.pine` | Al Brooks Price Action | Pure price action patterns (SBL/SBS, inside/outside bars, ii patterns, traps, double top/bottom, wedges, H1/H2/L1/L2, final flags) with yellow signal candles and alerts |
 
 ## Usage
 

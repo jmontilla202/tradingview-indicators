@@ -1,0 +1,510 @@
+//@version=6
+indicator("Al Brooks Price Action", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// =========================================================================
+// DISPLAY SETTINGS
+// =========================================================================
+grp_display = "Display Settings"
+i_label_size = input.string("Small", "Label Font Size",
+   options=["Tiny", "Small", "Normal", "Large"], group=grp_display)
+i_show_labels = input.bool(true, "Show Pattern Labels", group=grp_display)
+i_signal_color = input.color(color.yellow, "Signal Candle Color", group=grp_display)
+
+getLabelSize(s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+
+// =========================================================================
+// PATTERN ENABLE / DISABLE
+// =========================================================================
+grp_patterns = "Pattern Selection"
+
+// --- Bar Quality ---
+i_sb_long  = input.bool(true, "Signal Bar Long (SBL)",
+   group=grp_patterns, tooltip="Strong bull bar closing near its high — pure price action long entry signal")
+i_sb_short = input.bool(true, "Signal Bar Short (SBS)",
+   group=grp_patterns, tooltip="Strong bear bar closing near its low — pure price action short entry signal")
+
+// --- Inside / Outside Bars ---
+i_inside_bar   = input.bool(true, "Inside Bar (i)",
+   group=grp_patterns, tooltip="Bar completely inside prior bar's range — consolidation signal")
+i_outside_bull = input.bool(true, "Bull Outside Bar (OB)",
+   group=grp_patterns, tooltip="Engulfs prior bar AND closes near high — bullish momentum")
+i_outside_bear = input.bool(true, "Bear Outside Bar (OB)",
+   group=grp_patterns, tooltip="Engulfs prior bar AND closes near low — bearish momentum")
+
+// --- ii Patterns ---
+i_ii_long  = input.bool(true, "ii Breakout Long",
+   group=grp_patterns, tooltip="Two consecutive inside bars then a bull breakout — Al Brooks high-probability continuation")
+i_ii_short = input.bool(true, "ii Breakout Short",
+   group=grp_patterns, tooltip="Two consecutive inside bars then a bear breakout — Al Brooks high-probability continuation")
+
+// --- Failed Breakouts (Traps) ---
+i_fbo_bull = input.bool(true, "Bull Trap (Failed BO Down)",
+   group=grp_patterns, tooltip="Break below swing low that reverses back up — trapped shorts fuel long move")
+i_fbo_bear = input.bool(true, "Bear Trap (Failed BO Up)",
+   group=grp_patterns, tooltip="Break above swing high that reverses back down — trapped longs fuel short move")
+
+// --- Double Top / Bottom ---
+i_dt = input.bool(true, "Double Top",
+   group=grp_patterns, tooltip="Two swing highs at similar level → bearish reversal")
+i_db = input.bool(true, "Double Bottom",
+   group=grp_patterns, tooltip="Two swing lows at similar level → bullish reversal")
+
+// --- Wedge Patterns ---
+i_wedge_top = input.bool(true, "Wedge Top (3 Pushes Up)",
+   group=grp_patterns, tooltip="Three weakening upward pushes — Al Brooks wedge top reversal")
+i_wedge_bot = input.bool(true, "Wedge Bottom (3 Pushes Down)",
+   group=grp_patterns, tooltip="Three weakening downward pushes — Al Brooks wedge bottom reversal")
+
+// --- Trend Continuation ---
+i_tc_long  = input.bool(true, "Trend Continuation Long",
+   group=grp_patterns, tooltip="Strong bull bar after shallow pullback in uptrend")
+i_tc_short = input.bool(true, "Trend Continuation Short",
+   group=grp_patterns, tooltip="Strong bear bar after shallow rally in downtrend")
+
+// --- Pullback Entries (H1 / L1) ---
+i_h1 = input.bool(true, "H1 – 1st Pullback Long",
+   group=grp_patterns, tooltip="1st pullback buy setup: price dips to EMA area then bull signal bar")
+i_l1 = input.bool(true, "L1 – 1st Pullback Short",
+   group=grp_patterns, tooltip="1st rally sell setup: price rallies to EMA area then bear signal bar")
+
+// --- Pullback Entries (H2 / L2) ---
+i_h2 = input.bool(true, "H2 – 2nd Pullback Long",
+   group=grp_patterns, tooltip="2nd pullback buy setup: second test of EMA area in sustained uptrend")
+i_l2 = input.bool(true, "L2 – 2nd Pullback Short",
+   group=grp_patterns, tooltip="2nd rally sell setup: second test of EMA area in sustained downtrend")
+
+// --- Final Flag ---
+i_ff_long  = input.bool(true, "Final Flag Long",
+   group=grp_patterns, tooltip="Tight consolidation after extended downtrend → bull breakout (final flag)")
+i_ff_short = input.bool(true, "Final Flag Short",
+   group=grp_patterns, tooltip="Tight consolidation after extended uptrend → bear breakout (final flag)")
+
+// =========================================================================
+// DETECTION PARAMETERS
+// =========================================================================
+grp_params = "Detection Parameters"
+i_swing_lb = input.int(5, "Swing Lookback Bars", minval=3, maxval=20,
+   group=grp_params, tooltip="Bars before/after for swing pivot detection")
+i_trend_ema = input.int(20, "Trend EMA Period", minval=5, maxval=50,
+   group=grp_params, tooltip="EMA period used for trend bias determination")
+i_body_pct = input.float(0.5, "Min Body % for Signal", minval=0.2, maxval=1.0, step=0.05,
+   group=grp_params, tooltip="Minimum body as fraction of candle range to qualify as a signal bar")
+i_close_pct = input.float(0.25, "Close Near End %", minval=0.05, maxval=0.5, step=0.05,
+   group=grp_params, tooltip="How close open/close must be to bar end for 'closing near high/low'")
+i_atr_len = input.int(14, "ATR Length", minval=5, maxval=50,
+   group=grp_params, tooltip="ATR period used for dynamic thresholds")
+i_dt_db_tol = input.float(0.5, "Dbl Top/Btm Tolerance (ATR)", minval=0.1, maxval=2.0, step=0.1,
+   group=grp_params, tooltip="Max difference between double peaks as multiple of ATR")
+i_wedge_tol = input.float(1.0, "Wedge Tolerance (ATR)", minval=0.2, maxval=3.0, step=0.1,
+   group=grp_params, tooltip="Tolerance for wedge leg-weakening as multiple of ATR")
+i_ff_narrow_pct = input.float(0.5, "Final Flag Narrow %", minval=0.1, maxval=1.5, step=0.1,
+   group=grp_params, tooltip="Max range of flag bars as % of ATR to qualify as 'tight'")
+i_ff_bars = input.int(3, "Final Flag Min Bars", minval=2, maxval=10,
+   group=grp_params, tooltip="Minimum bars of tight consolidation to form a flag")
+i_trend_bars = input.int(15, "Trend Length (bars)", minval=5, maxval=50,
+   group=grp_params, tooltip="Min bars in sustained trend for Final Flag / Wedge context")
+i_swing_max_age = input.int(30, "Max Swing Age (bars)", minval=10, maxval=100,
+   group=grp_params, tooltip="How old a swing point can be before it's considered stale for pattern matching")
+
+// =========================================================================
+// HELPER FUNCTIONS
+// =========================================================================
+
+// --- ATR ---
+float atr_val = ta.atr(i_atr_len)
+
+// --- Trend EMA ---
+float ema_trend = ta.ema(close, i_trend_ema)
+
+// --- Bar Analysis ---
+barRange()   => high - low
+barBody()    => math.abs(close - open)
+barBodyPct() => barRange() > 0 ? barBody() / barRange() : 0.0
+
+isBullBar() => close > open
+isBearBar() => close < open
+
+bodyOk() => barBodyPct() >= i_body_pct
+
+closesNearHigh() => barRange() > 0 and (high - close) <= barRange() * i_close_pct
+closesNearLow()  => barRange() > 0 and (close - low)  <= barRange() * i_close_pct
+
+// --- Swing Detection (built-in, repaints last i_swing_lb bars) ---
+float phRaw = ta.pivothigh(high, i_swing_lb, i_swing_lb)
+float plRaw = ta.pivotlow(low,  i_swing_lb, i_swing_lb)
+pivotHigh = not na(phRaw)
+pivotLow  = not na(plRaw)
+
+// --- Track Swing Points ---
+var float[] swingHighPrices = array.new_float()
+var int[]   swingHighBars   = array.new_int()
+var float[] swingLowPrices  = array.new_float()
+var int[]   swingLowBars    = array.new_int()
+
+// Push detected pivots
+if pivotHigh
+    bool tooClose = array.size(swingHighPrices) > 0 and math.abs(array.last(swingHighPrices) - phRaw) < atr_val * 0.15
+    if not tooClose
+        array.push(swingHighPrices, phRaw)
+        array.push(swingHighBars, bar_index)
+
+if pivotLow
+    bool tooClose = array.size(swingLowPrices) > 0 and math.abs(array.last(swingLowPrices) - plRaw) < atr_val * 0.15
+    if not tooClose
+        array.push(swingLowPrices, plRaw)
+        array.push(swingLowBars, bar_index)
+
+// Trim old / excess swing points
+f_trim(arr, maxSz) =>
+    while array.size(arr) > maxSz
+        array.shift(arr)
+
+f_trim(swingHighPrices, 20)
+f_trim(swingHighBars, 20)
+f_trim(swingLowPrices, 20)
+f_trim(swingLowBars, 20)
+
+// Helper: check if last stored swing of type is recent enough
+lastHighRecent() =>
+    array.size(swingHighBars) > 0 and (bar_index - array.last(swingHighBars)) <= i_swing_max_age
+
+lastLowRecent() =>
+    array.size(swingLowBars) > 0 and (bar_index - array.last(swingLowBars)) <= i_swing_max_age
+
+// --- Trend Context ---
+isBullTrend() => close > ema_trend and ema_trend > ema_trend[10]
+isBearTrend() => close < ema_trend and ema_trend < ema_trend[10]
+
+isSustainedBullTrend() =>
+    bool ok = true
+    for i = 1 to i_trend_bars
+        if close[i] < ema_trend[i]
+            ok := false
+    ok
+
+isSustainedBearTrend() =>
+    bool ok = true
+    for i = 1 to i_trend_bars
+        if close[i] > ema_trend[i]
+            ok := false
+    ok
+
+// =========================================================================
+// PATTERN DETECTION
+// =========================================================================
+
+// --- 1. Signal Bar Long (SBL) ---
+sigBullBar() => isBullBar() and bodyOk() and closesNearHigh()
+
+// --- 2. Signal Bar Short (SBS) ---
+sigBearBar() => isBearBar() and bodyOk() and closesNearLow()
+
+// --- 3. Inside Bar (i) ---
+insideBar = high < high[1] and low > low[1]
+
+// --- 4. ii Pattern Long ---
+// Two consecutive inside bars, THEN broken above by current bar
+iiLong() =>
+    insideBar[1] and insideBar[2] and not insideBar and close > high[1]
+
+// --- 5. ii Pattern Short ---
+iiShort() =>
+    insideBar[1] and insideBar[2] and not insideBar and close < low[1]
+
+// --- 6. Bull Outside Bar (OB) ---
+bullOutsideBar() =>
+    high > high[1] and low < low[1] and isBullBar() and closesNearHigh()
+
+// --- 7. Bear Outside Bar (OB) ---
+bearOutsideBar() =>
+    high > high[1] and low < low[1] and isBearBar() and closesNearLow()
+
+// --- 8. Bull Trap (Failed Breakout Down) ---
+// Long: price breaks below a recent pivot low, then closes back above it
+bullTrap() => (
+    lastLowRecent() and
+    low <= array.last(swingLowPrices) * 0.9995 and
+    close > array.last(swingLowPrices)
+)
+
+// --- 9. Bear Trap (Failed Breakout Up) ---
+// Short: price breaks above a recent pivot high, then closes back below it
+bearTrap() => (
+    lastHighRecent() and
+    high >= array.last(swingHighPrices) * 1.0005 and
+    close < array.last(swingHighPrices)
+)
+
+// --- 10. Double Top ---
+// Last 2 swing highs near same level + bearish signal bar now
+doubleTop() =>
+    int sz = array.size(swingHighPrices)
+    (sz >= 2 and lastHighRecent() and
+     math.abs(array.last(swingHighPrices) - array.get(swingHighPrices, sz - 2)) <= atr_val * i_dt_db_tol and
+     isBearBar() and closesNearLow())
+
+// --- 11. Double Bottom ---
+doubleBottom() =>
+    int sz = array.size(swingLowPrices)
+    (sz >= 2 and lastLowRecent() and
+     math.abs(array.last(swingLowPrices) - array.get(swingLowPrices, sz - 2)) <= atr_val * i_dt_db_tol and
+     isBullBar() and closesNearHigh())
+
+// --- 12. Wedge Top (3 Pushes Up) ---
+wedgeTop() =>
+    int sz = array.size(swingHighPrices)
+    if sz < 3 or not lastHighRecent()
+        false
+    else
+        float h1 = array.get(swingHighPrices, sz - 3)
+        float h2 = array.get(swingHighPrices, sz - 2)
+        float h3 = array.get(swingHighPrices, sz - 1)
+        bool ascending = h1 < h2 and h2 < h3
+        float leg2_h = h2 - h1
+        float leg3_h = h3 - h2
+        bool weakening = leg3_h < leg2_h - atr_val * i_wedge_tol and leg2_h < atr_val * 3
+        ascending and weakening and isBearBar() and closesNearLow()
+
+// --- 13. Wedge Bottom (3 Pushes Down) ---
+wedgeBottom() =>
+    int sz = array.size(swingLowPrices)
+    if sz < 3 or not lastLowRecent()
+        false
+    else
+        float l1 = array.get(swingLowPrices, sz - 3)
+        float l2 = array.get(swingLowPrices, sz - 2)
+        float l3 = array.get(swingLowPrices, sz - 1)
+        bool descending = l1 > l2 and l2 > l3
+        float leg2_l = l1 - l2
+        float leg3_l = l2 - l3
+        bool weakening = leg3_l < leg2_l - atr_val * i_wedge_tol and leg2_l < atr_val * 3
+        descending and weakening and isBullBar() and closesNearHigh()
+
+// --- 14. Trend Continuation Long ---
+trendContinuationLong() =>
+    isBullTrend() and sigBullBar() and low[1] <= ema_trend[1] * 1.005
+
+// --- 15. Trend Continuation Short ---
+trendContinuationShort() =>
+    isBearTrend() and sigBearBar() and high[1] >= ema_trend[1] * 0.995
+
+// --- 16. H1 – First Pullback Long ---
+h1Long() =>
+    isBullTrend() and sigBullBar() and low[1] <= ema_trend[1] and close > ema_trend
+
+// --- 17. L1 – First Pullback Short ---
+l1Short() =>
+    isBearTrend() and sigBearBar() and high[1] >= ema_trend[1] and close < ema_trend
+
+// --- 18. H2 – Second Pullback Long ---
+h2Long() => (
+    isSustainedBullTrend() and sigBullBar() and
+    close > ema_trend and close[1] < close and
+    ta.lowest(low, 5) <= ema_trend * 1.005
+)
+
+// --- 19. L2 – Second Pullback Short ---
+l2Short() => (
+    isSustainedBearTrend() and sigBearBar() and
+    close < ema_trend and close[1] > close and
+    ta.highest(high, 5) >= ema_trend * 0.995
+)
+
+// --- 20. Final Flag Long ---
+finalFlagLong() =>
+    bool tight = true
+    bool downtrend = isSustainedBearTrend()
+    if downtrend
+        for i = 1 to i_ff_bars
+            if (high[i] - low[i]) > atr_val * i_ff_narrow_pct
+                tight := false
+    else
+        tight := false
+    (downtrend and tight and sigBullBar() and
+     // Breakout above the tight range
+     close > ta.highest(high[1], i_ff_bars))
+
+// --- 21. Final Flag Short ---
+finalFlagShort() =>
+    bool tight = true
+    bool uptrend = isSustainedBullTrend()
+    if uptrend
+        for i = 1 to i_ff_bars
+            if (high[i] - low[i]) > atr_val * i_ff_narrow_pct
+                tight := false
+    else
+        tight := false
+    (uptrend and tight and sigBearBar() and
+     // Breakdown below the tight range
+     close < ta.lowest(low[1], i_ff_bars))
+
+// =========================================================================
+// PATTERN LOOKUP
+// =========================================================================
+allBullKeys  = array.from("SBL", "iiL", "OBL", "FBO", "DB",  "WB",  "TCL", "H1", "H2", "FFL")
+allBearKeys  = array.from("SBS", "iiS", "OBS", "FBS", "DT",  "WT",  "TCS", "L1", "L2", "FFS")
+
+bullLabels = array.from(
+    "Signal Bar Long", "ii Breakout↑", "Bull Outside Bar", "Bull Trap",
+    "Double Bottom",   "Wedge Bottom", "Trend Cont↑",     "H1 Long",
+    "H2 Long",         "Final Flag↑"
+)
+
+bearLabels = array.from(
+    "Signal Bar Short", "ii Breakout↓", "Bear Outside Bar", "Bear Trap",
+    "Double Top",       "Wedge Top",    "Trend Cont↓",     "L1 Short",
+    "L2 Short",         "Final Flag↓"
+)
+
+bullPattern(key) =>
+    switch key
+        "SBL" => i_sb_long  and sigBullBar()
+        "iiL" => i_ii_long  and iiLong()
+        "OBL" => i_outside_bull and bullOutsideBar()
+        "FBO" => i_fbo_bull and bullTrap()
+        "DB"  => i_db       and doubleBottom()
+        "WB"  => i_wedge_bot and wedgeBottom()
+        "TCL" => i_tc_long  and trendContinuationLong()
+        "H1"  => i_h1       and h1Long()
+        "H2"  => i_h2       and h2Long()
+        "FFL" => i_ff_long  and finalFlagLong()
+        => false
+
+bearPattern(key) =>
+    switch key
+        "SBS" => i_sb_short and sigBearBar()
+        "iiS" => i_ii_short and iiShort()
+        "OBS" => i_outside_bear and bearOutsideBar()
+        "FBS" => i_fbo_bear and bearTrap()
+        "DT"  => i_dt       and doubleTop()
+        "WT"  => i_wedge_top and wedgeTop()
+        "TCS" => i_tc_short and trendContinuationShort()
+        "L1"  => i_l1       and l1Short()
+        "L2"  => i_l2       and l2Short()
+        "FFS" => i_ff_short and finalFlagShort()
+        => false
+
+// --- Evaluate patterns ---
+anyBull = false
+anyBear = false
+string bullName = ""
+string bearName = ""
+
+for i = 0 to array.size(allBullKeys) - 1
+    if bullPattern(array.get(allBullKeys, i))
+        anyBull := true
+        bullName := array.get(bullLabels, i)
+        break
+
+for i = 0 to array.size(allBearKeys) - 1
+    if bearPattern(array.get(allBearKeys, i))
+        anyBear := true
+        bearName := array.get(bearLabels, i)
+        break
+
+showIB = i_inside_bar and insideBar
+anySignal = anyBull or anyBear or showIB
+
+// =========================================================================
+// LABEL DISPLAY
+// =========================================================================
+lblSize = getLabelSize(i_label_size)
+
+// Long (green) — below candle
+if i_show_labels and anyBull
+    label.new(
+         bar_index, na,
+         text=bullName,
+         xloc=xloc.bar_index,
+         yloc=yloc.belowbar,
+         color=color.new(color.green, 90),
+         textcolor=color.green,
+         style=label.style_label_up,
+         size=lblSize
+    )
+
+// Short (red) — above candle
+if i_show_labels and anyBear
+    label.new(
+         bar_index, na,
+         text=bearName,
+         xloc=xloc.bar_index,
+         yloc=yloc.abovebar,
+         color=color.new(color.red, 90),
+         textcolor=color.red,
+         style=label.style_label_down,
+         size=lblSize
+    )
+
+// Inside Bar — gray, above candle (only if no other pattern fired)
+if i_show_labels and showIB and not (anyBull or anyBear)
+    label.new(
+         bar_index, na,
+         text="Inside Bar",
+         xloc=xloc.bar_index,
+         yloc=yloc.abovebar,
+         color=color.new(color.gray, 90),
+         textcolor=color.gray,
+         style=label.style_label_down,
+         size=lblSize
+    )
+
+// =========================================================================
+// BAR COLORING — Signal candles turn yellow
+// =========================================================================
+barcolor(anySignal ? i_signal_color : na, title="Signal Candle")
+
+// =========================================================================
+// ALERT CONDITIONS
+// =========================================================================
+alertcondition(i_sb_long  and sigBullBar(),           title="Signal Bar Long",         message="Al Brooks – Signal Bar Long (SBL)")
+alertcondition(i_sb_short and sigBearBar(),           title="Signal Bar Short",        message="Al Brooks – Signal Bar Short (SBS)")
+alertcondition(i_inside_bar   and insideBar,          title="Inside Bar",              message="Al Brooks – Inside Bar (i)")
+alertcondition(i_ii_long  and iiLong(),               title="ii Breakout Long",        message="Al Brooks – ii Breakout Long")
+alertcondition(i_ii_short and iiShort(),              title="ii Breakout Short",       message="Al Brooks – ii Breakout Short")
+alertcondition(i_outside_bull and bullOutsideBar(),   title="Bull Outside Bar",        message="Al Brooks – Bull Outside Bar (OB)")
+alertcondition(i_outside_bear and bearOutsideBar(),   title="Bear Outside Bar",        message="Al Brooks – Bear Outside Bar (OB)")
+alertcondition(i_fbo_bull and bullTrap(),             title="Bull Trap (FBOD)",        message="Al Brooks – Bull Trap / Failed BO Down")
+alertcondition(i_fbo_bear and bearTrap(),             title="Bear Trap (FBOU)",        message="Al Brooks – Bear Trap / Failed BO Up")
+alertcondition(i_dt       and doubleTop(),            title="Double Top",              message="Al Brooks – Double Top")
+alertcondition(i_db       and doubleBottom(),         title="Double Bottom",           message="Al Brooks – Double Bottom")
+alertcondition(i_wedge_top and wedgeTop(),            title="Wedge Top (3 Pushes)",    message="Al Brooks – Wedge Top / 3 Pushes Up")
+alertcondition(i_wedge_bot and wedgeBottom(),         title="Wedge Bottom (3 Pushes)", message="Al Brooks – Wedge Bottom / 3 Pushes Down")
+alertcondition(i_tc_long  and trendContinuationLong(),title="Trend Continuation Long", message="Al Brooks – Trend Continuation Long")
+alertcondition(i_tc_short and trendContinuationShort(),title="Trend Continuation Short",message="Al Brooks – Trend Continuation Short")
+alertcondition(i_h1       and h1Long(),               title="H1 Long",                 message="Al Brooks – H1 1st Pullback Long")
+alertcondition(i_l1       and l1Short(),              title="L1 Short",                message="Al Brooks – L1 1st Pullback Short")
+alertcondition(i_h2       and h2Long(),               title="H2 Long",                 message="Al Brooks – H2 2nd Pullback Long")
+alertcondition(i_l2       and l2Short(),              title="L2 Short",                message="Al Brooks – L2 2nd Pullback Short")
+alertcondition(i_ff_long  and finalFlagLong(),        title="Final Flag Long",         message="Al Brooks – Final Flag Bull Breakout")
+alertcondition(i_ff_short and finalFlagShort(),       title="Final Flag Short",        message="Al Brooks – Final Flag Bear Breakout")
+
+// Combined roll-up alert conditions
+alertcondition(anyBull,   title="Any Bullish Pattern",    message="Al Brooks – Bullish Price Action Pattern Detected")
+alertcondition(anyBear,   title="Any Bearish Pattern",    message="Al Brooks – Bearish Price Action Pattern Detected")
+alertcondition(anySignal, title="Any Al Brooks Pattern",  message="Al Brooks – Price Action Pattern Detected")
+
+// =========================================================================
+// VISUAL: Trend EMA reference line
+// =========================================================================
+grp_viz = "Visual Reference"
+i_show_ema = input.bool(true, "Show Trend EMA", group=grp_viz)
+i_ema_color = input.color(color.new(color.blue, 50), "EMA Color", group=grp_viz)
+
+plot(i_show_ema ? ema_trend : na, "Trend EMA", i_ema_color, 1, plot.style_line)
+
+// =========================================================================
+// VISUAL: Optional swing-point markers
+// =========================================================================
+i_show_swings = input.bool(false, "Show Swing Points", group=grp_viz,
+   tooltip="Plot markers on detected pivot highs and lows")
+
+plotshape(i_show_swings and pivotHigh, title="Pivot High",
+   style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny)
+plotshape(i_show_swings and pivotLow,  title="Pivot Low",
+   style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.tiny)
