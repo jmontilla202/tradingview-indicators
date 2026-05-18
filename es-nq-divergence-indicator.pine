@@ -60,6 +60,11 @@ i_lookback_htf = input.int(5, "HTF Lookback (bars)", minval=2, maxval=50, group=
 i_lookback_ltf = input.int(5, "LTF Lookback (bars)", minval=2, maxval=50, group=grp_lookback)
 i_rs_lookback = input.int(10, "Relative Strength Lookback (bars)", minval=2, maxval=100, group=grp_lookback)
 
+// --- Thresholds ---
+grp_thresholds = "Thresholds"
+i_trend_threshold = input.float(1.0, "Trend ATR Multiplier", minval=0.1, maxval=5.0, step=0.1, group=grp_thresholds, tooltip="Trend threshold = ATR × this multiplier. Higher = less noise sensitivity. Default 1.0.")
+i_rs_threshold = input.float(0.1, "RS Bias Threshold (%)", minval=0.01, maxval=1.0, step=0.01, group=grp_thresholds, tooltip="Minimum % difference to declare ES or NQ as stronger.")
+
 // --- Table ---
 grp_table = "Table Settings"
 i_pos  = input.string("Bottom Right", title="Table Position",
@@ -151,15 +156,13 @@ getDivLabel(direction, strength) =>
 // =========================================================================
 // Determines trend direction (1 = up, -1 = down, 0 = flat) using
 // simple moving average slope over N periods.
-getTrend(src, length) =>
+getTrend(src, length, atrThreshold) =>
     if na(src)
         0
     else
         float ma = ta.sma(src, length)
-        // Compare current MA to MA from `length` bars ago
         float slope = ma - ma[length]
-        // Use 0.05% of price level as noise threshold (avoids chart-symbol ATR mismatch)
-        float threshold = math.abs(ma) * 0.0005
+        float threshold = atrThreshold * i_trend_threshold
         if slope > threshold
             1
         else if slope < -threshold
@@ -186,14 +189,17 @@ classifyDiv(htfTrend, ltfTrend) =>
 // DATA FETCHING
 // =========================================================================
 // Fetch ES and NQ close prices on chart timeframe (for relative strength)
-es_close  = request.security(ES_TICKER, timeframe.period, close)
-nq_close  = request.security(NQ_TICKER, timeframe.period, close)
+es_close  = request.security(ES_TICKER, timeframe.period, close, lookahead=barmerge.lookahead_on)
+nq_close  = request.security(NQ_TICKER, timeframe.period, close, lookahead=barmerge.lookahead_on)
 
 // Fetch ES and NQ close prices on LTF and HTF (for divergence)
-es_ltf_close = request.security(ES_TICKER, i_ltf, close)
-es_htf_close = request.security(ES_TICKER, i_htf, close)
-nq_ltf_close = request.security(NQ_TICKER, i_ltf, close)
-nq_htf_close = request.security(NQ_TICKER, i_htf, close)
+es_ltf_close = request.security(ES_TICKER, i_ltf, close, lookahead=barmerge.lookahead_on)
+es_htf_close = request.security(ES_TICKER, i_htf, close, lookahead=barmerge.lookahead_on)
+nq_ltf_close = request.security(NQ_TICKER, i_ltf, close, lookahead=barmerge.lookahead_on)
+nq_htf_close = request.security(NQ_TICKER, i_htf, close, lookahead=barmerge.lookahead_on)
+
+// Fetch ATR for trend threshold (on chart timeframe)
+float es_atr = request.security(ES_TICKER, timeframe.period, ta.atr(14), lookahead=barmerge.lookahead_on)
 
 // =========================================================================
 // RELATIVE STRENGTH CALCULATIONS (based on chart timeframe)
@@ -204,7 +210,7 @@ nq_pct_change = (nq_close - nq_close[i_rs_lookback]) / nq_close[i_rs_lookback] *
 
 // Determine which is stronger: 1 = ES, -1 = NQ, 0 = even
 float rs_diff = es_pct_change - nq_pct_change
-int rs_bias = rs_diff > 0.1 ? 1 : rs_diff < -0.1 ? -1 : 0
+int rs_bias = rs_diff > i_rs_threshold ? 1 : rs_diff < -i_rs_threshold ? -1 : 0
 
 // -- Price Ratio --
 float ratio = es_close / nq_close
@@ -216,13 +222,13 @@ int ratio_trend = ratio > ratio_sma ? 1 : ratio < ratio_sma ? -1 : 0
 // DIVERGENCE CALCULATIONS
 // =========================================================================
 // ES divergence: compare HTF trend vs LTF trend
-int es_htf_trend = getTrend(es_htf_close, i_lookback_htf)
-int es_ltf_trend = getTrend(es_ltf_close, i_lookback_ltf)
+int es_htf_trend = getTrend(es_htf_close, i_lookback_htf, es_atr)
+int es_ltf_trend = getTrend(es_ltf_close, i_lookback_ltf, es_atr)
 [es_div_dir, es_div_str] = classifyDiv(es_htf_trend, es_ltf_trend)
 
 // NQ divergence
-int nq_htf_trend = getTrend(nq_htf_close, i_lookback_htf)
-int nq_ltf_trend = getTrend(nq_ltf_close, i_lookback_ltf)
+int nq_htf_trend = getTrend(nq_htf_close, i_lookback_htf, es_atr)
+int nq_ltf_trend = getTrend(nq_ltf_close, i_lookback_ltf, es_atr)
 [nq_div_dir, nq_div_str] = classifyDiv(nq_htf_trend, nq_ltf_trend)
 
 // =========================================================================
@@ -291,7 +297,7 @@ if barstate.islast
        text_color=rs_color, text_size=getFontSize(i_size))
 
     // -- Row 5: ES/NQ Price Ratio --
-    string ratio_str = "ES/NQ: " + str.tostring(ratio, "#.00000")
+    string ratio_str = "ES/NQ: " + str.tostring(ratio, "0.00")
     table.cell(tbl, 0, 5, "Price Ratio", text_color=color.white,
        text_size=getFontSize(i_size), text_halign=text.align_left)
     table.merge_cells(tbl, 1, 5, 2, 5)
@@ -331,5 +337,5 @@ if barstate.islast
        + " | RS: " + str.tostring(i_rs_lookback) + " bars"
        + " | ▲ ConvBull | ▼ ConvBear | △ DiveBull | ▽ DiveBear | ● Neutral"
     table.cell(tbl, 0, 9, footer_text,
-       text_color=color.gray, text_size=i_size == "Large" ? size.normal : size.small,
+       text_color=color.gray, text_size=size.small,
        bgcolor=color.new(color.black, 90))
