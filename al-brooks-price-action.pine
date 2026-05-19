@@ -8,8 +8,6 @@ grp_display = "Display Settings"
 i_label_size = input.string("Small", "Label Font Size",
    options=["Tiny", "Small", "Normal", "Large"], group=grp_display)
 i_show_labels = input.bool(true, "Show Pattern Labels", group=grp_display)
-i_signal_color = input.color(color.yellow, "Signal Candle Color", group=grp_display)
-
 getLabelSize(s) =>
     switch s
         "Tiny"   => size.tiny
@@ -453,11 +451,6 @@ if i_show_labels and showIB and not (anyBull or anyBear)
          style=label.style_label_down,
          size=lblSize
     )
-
-// =========================================================================
-// BAR COLORING — Signal candles turn yellow
-// =========================================================================
-barcolor(anySignal ? i_signal_color : na, title="Signal Candle")
 
 // =========================================================================
 // ALERT CONDITIONS
