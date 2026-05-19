@@ -1,0 +1,363 @@
+//@version=6
+indicator("CVD Absorption Exhaustion Divergence", overlay=true, max_labels_count=500)
+
+// =========================================================================
+// OVERVIEW
+// =========================================================================
+// This indicator uses Cumulative Volume Delta (CVD) to detect divergence
+// between price and buying/selling pressure at swing pivots.
+//
+// DIVERGENCE TYPES:
+//
+//   -- Absorption (price leads, CVD does NOT confirm) --
+//   Bullish Absorption: Price makes a lower low but CVD makes a higher low.
+//     Selling is being absorbed by hidden buying — potential bullish reversal.
+//   Bearish Absorption: Price makes a higher high but CVD makes a lower high.
+//     Buying is being absorbed by hidden selling — potential bearish reversal.
+//
+//   -- Exhaustion (CVD leads, price does NOT confirm) --
+//   Bullish Exhaustion: CVD makes a lower low but price makes a higher low.
+//     Selling pressure is exhausting — potential bullish reversal.
+//   Bearish Exhaustion: CVD makes a higher high but price makes a lower high.
+//     Buying pressure is exhausting — potential bearish reversal.
+//
+// A colored "ON" appears in the table when a divergence is active.
+// The signal persists until the next pivot of the same type (high/low)
+// invalidates it. Pivot labels are drawn on-chart at detection points.
+// =========================================================================
+
+// =========================================================================
+// INPUTS
+// =========================================================================
+
+// --- CVD Settings ---
+grp_cvd = "CVD Settings"
+i_pivot_lookback = input.int(5, "Pivot Lookback",
+    minval=2, maxval=50, group=grp_cvd,
+    tooltip="Number of bars left/right for swing pivot detection. Lower = more pivots (sensitive). Higher = fewer pivots (major swings only).")
+i_pivot_method = input.string("Wicks", "Pivot Source",
+    options=["Wicks", "Bodies", "Closes"], group=grp_cvd,
+    tooltip="Which price component to use for pivot detection.\nWicks = high/low (extremes).\nBodies = max/min of open/close.\nCloses = close price.")
+
+// --- Divergence Threshold ---
+grp_thresholds = "Thresholds"
+i_cvd_pct_threshold = input.float(0.0, "CVD Change Threshold (%)",
+    minval=0.0, maxval=50.0, step=0.5, group=grp_thresholds,
+    tooltip="Minimum % difference between CVD pivot values required to confirm divergence.\n0% = no minimum. Higher values filter out weak divergences.")
+
+// --- Chart Labels ---
+grp_labels = "Chart Labels"
+i_show_labels = input.bool(true, "Show Divergence Labels",
+    group=grp_labels,
+    tooltip="Draw labels on the chart at pivot points where divergence is detected.")
+i_label_size = input.string("Small", "Label Size",
+    options=["Tiny", "Small", "Normal", "Large"], group=grp_labels)
+i_show_signal_bg = input.bool(true, "Highlight Signal Bars",
+    group=grp_labels,
+    tooltip="Highlight the bar where a divergence is confirmed with a background color.")
+
+// --- Table Settings ---
+grp_table = "Table Settings"
+i_pos = input.string("Bottom Right", "Table Position",
+    options=["Top Left", "Top Center", "Top Right",
+             "Middle Left", "Middle Center", "Middle Right",
+             "Bottom Left", "Bottom Center", "Bottom Right"],
+    group=grp_table)
+i_size = input.string("Normal", "Font Size",
+    options=["Auto", "Tiny", "Small", "Normal", "Large"], group=grp_table)
+i_bg = input.color(color.new(color.black, 70), "Table Background", group=grp_table)
+
+// --- Colors ---
+grp_colors = "Colors"
+i_bull_color = input.color(color.green, "Bullish Signal", group=grp_colors,
+    tooltip="Color for bullish absorption/exhaustion circles and labels.")
+i_bear_color = input.color(color.red, "Bearish Signal", group=grp_colors,
+    tooltip="Color for bearish absorption/exhaustion circles and labels.")
+i_inactive_color = input.color(color.new(color.gray, 80), "Inactive",
+    group=grp_colors,
+    tooltip="Color for the circle when no divergence is active.")
+i_signal_bg = input.color(color.yellow, "Signal Candle Color",
+    group=grp_colors,
+    tooltip="Background highlight color for the bar where divergence is detected.\nSet transparency to 100 to disable.")
+
+// =========================================================================
+// UTILITY FUNCTIONS
+// =========================================================================
+
+getPosition(p) =>
+    switch p
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Middle Left"   => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right"  => position.middle_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right"  => position.bottom_right
+        =>                position.bottom_right
+
+getFontSize(s) =>
+    switch s
+        "Auto"   => size.auto
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        =>         size.normal
+
+getLabelSize(s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        =>         size.small
+
+// =========================================================================
+// PIVOT SOURCE SELECTION
+// =========================================================================
+// The user can choose between detecting pivots on wicks (high/low),
+// bodies (max/min of open/close), or closes.
+
+float pivotHighSrc = switch i_pivot_method
+    "Wicks"  => high
+    "Bodies" => math.max(open, close)
+    "Closes" => close
+    =>         high
+
+float pivotLowSrc = switch i_pivot_method
+    "Wicks"  => low
+    "Bodies" => math.min(open, close)
+    "Closes" => close
+    =>         low
+
+// =========================================================================
+// CVD (CUMULATIVE VOLUME DELTA) CALCULATION
+// =========================================================================
+// Per-bar delta: proportion of volume attributed to buying minus selling.
+// Uses the bar's close position within its range as a weight.
+//   close at high  → +volume (all buying)
+//   close at low   → -volume (all selling)
+//   close at mid   → 0 (even)
+
+float bar_delta = high != low ? volume * (2.0 * close - high - low) / (high - low) : 0.0
+
+// Cumulative sum — resets at the start of the chart
+var float cvd = 0.0
+cvd := nz(cvd[1]) + bar_delta
+
+// =========================================================================
+// PIVOT DETECTION
+// =========================================================================
+// Detect swing highs and lows in price using TradingView's built-in pivot
+// functions. These return the source value at confirmed pivot bars and na
+// everywhere else.
+
+float ph = ta.pivothigh(pivotHighSrc, i_pivot_lookback, i_pivot_lookback)
+float pl = ta.pivotlow(pivotLowSrc, i_pivot_lookback, i_pivot_lookback)
+
+bool isPh = not na(ph)
+bool isPl = not na(pl)
+
+// =========================================================================
+// DIVERGENCE STATE TRACKING
+// =========================================================================
+// We store the last two confirmed pivot values (price + CVD) and compare
+// them to classify what kind of divergence, if any, has formed.
+
+// --- Pivot High storage (for bearish signals) ---
+var float last_ph_price = na
+var float last_ph_cvd   = na
+var float prev_ph_price = na
+var float prev_ph_cvd   = na
+
+// --- Pivot Low storage (for bullish signals) ---
+var float last_pl_price = na
+var float last_pl_cvd   = na
+var float prev_pl_price = na
+var float prev_pl_cvd   = na
+
+// --- Divergence states: 1 = active, 0 = inactive ---
+var int bull_absorption = 0
+var int bear_absorption = 0
+var int bull_exhaustion = 0
+var int bear_exhaustion = 0
+
+// Helper: check if CVD change between two pivots exceeds the threshold
+cvdDeltaPct(a, b) =>
+    b != 0.0 ? math.abs(a - b) / math.abs(b) * 100.0 : 0.0
+
+// =========================================================================
+// DIVERGENCE DETECTION — PIVOT HIGHS
+// =========================================================================
+if isPh
+    // Shift previous values
+    prev_ph_price := last_ph_price
+    prev_ph_cvd   := last_ph_cvd
+    last_ph_price := ph
+    last_ph_cvd   := cvd
+
+    // Only compare when we have two confirmed pivots
+    if not na(prev_ph_price) and not na(last_ph_price)
+        float cvd_chg = cvdDeltaPct(last_ph_cvd, prev_ph_cvd)
+
+        // --- Bearish Absorption ---
+        // Price makes a higher high, but CVD makes a lower high
+        // → buying is being absorbed by hidden selling
+        bool ba = last_ph_price > prev_ph_price and last_ph_cvd < prev_ph_cvd and cvd_chg >= i_cvd_pct_threshold
+        bear_absorption := ba ? 1 : 0
+
+        // --- Bearish Exhaustion ---
+        // CVD makes a higher high, but price makes a lower high
+        // → buying pressure is exhausting
+        bool be = last_ph_cvd > prev_ph_cvd and last_ph_price < prev_ph_price and cvd_chg >= i_cvd_pct_threshold
+        bear_exhaustion := be ? 1 : 0
+
+    // Draw on-chart label if divergence was just detected
+    if i_show_labels
+        if bear_absorption == 1
+            label.new(
+              bar_index[i_pivot_lookback], ph,
+              "Bear Absorb", color=color.new(i_bear_color, 80),
+              textcolor=i_bear_color, style=label.style_label_down,
+              size=getLabelSize(i_label_size))
+
+        if bear_exhaustion == 1
+            label.new(
+              bar_index[i_pivot_lookback], ph,
+              "Bear Exhst", color=color.new(i_bear_color, 80),
+              textcolor=i_bear_color, style=label.style_label_down,
+              size=getLabelSize(i_label_size))
+
+// =========================================================================
+// DIVERGENCE DETECTION — PIVOT LOWS
+// =========================================================================
+if isPl
+    // Shift previous values
+    prev_pl_price := last_pl_price
+    prev_pl_cvd   := last_pl_cvd
+    last_pl_price := pl
+    last_pl_cvd   := cvd
+
+    // Only compare when we have two confirmed pivots
+    if not na(prev_pl_price) and not na(last_pl_price)
+        float cvd_chg = cvdDeltaPct(last_pl_cvd, prev_pl_cvd)
+
+        // --- Bullish Absorption ---
+        // Price makes a lower low, but CVD makes a higher low
+        // → selling is being absorbed by hidden buying
+        bool ba2 = last_pl_price < prev_pl_price and last_pl_cvd > prev_pl_cvd and cvd_chg >= i_cvd_pct_threshold
+        bull_absorption := ba2 ? 1 : 0
+
+        // --- Bullish Exhaustion ---
+        // CVD makes a lower low, but price makes a higher low
+        // → selling pressure is exhausting
+        bool be2 = last_pl_cvd < prev_pl_cvd and last_pl_price > prev_pl_price and cvd_chg >= i_cvd_pct_threshold
+        bull_exhaustion := be2 ? 1 : 0
+
+    // Draw on-chart label if divergence was just detected
+    if i_show_labels
+        if bull_absorption == 1
+            label.new(
+              bar_index[i_pivot_lookback], pl,
+              "Bull Absorb", color=color.new(i_bull_color, 80),
+              textcolor=i_bull_color, style=label.style_label_up,
+              size=getLabelSize(i_label_size))
+
+        if bull_exhaustion == 1
+            label.new(
+              bar_index[i_pivot_lookback], pl,
+              "Bull Exhst", color=color.new(i_bull_color, 80),
+              textcolor=i_bull_color, style=label.style_label_up,
+              size=getLabelSize(i_label_size))
+
+// =========================================================================
+// SIGNAL CANDLE HIGHLIGHT
+// =========================================================================
+// Highlight the confirmation bar (when the pivot is confirmed, i_pivot_lookback
+// bars after the actual pivot) if a divergence was detected.
+
+bool any_divergence_detected = (isPh and (bear_absorption == 1 or bear_exhaustion == 1)) or (isPl and (bull_absorption == 1 or bull_exhaustion == 1))
+
+bgcolor(any_divergence_detected and i_show_signal_bg ? i_signal_bg : na,
+  title="Divergence Signal Bar")
+
+// =========================================================================
+// TABLE CONSTRUCTION
+// =========================================================================
+// Layout (3 columns × 4 rows):
+//
+//   Col 0: Metric name (left-aligned)
+//   Col 1: Bullish Divergence
+//   Col 2: Bearish Divergence
+//
+//   Row 0: Title (merged across all cols)
+//   Row 1: Column headers
+//   Row 2: Absorption — ● if active
+//   Row 3: Exhaustion — ● if active
+
+var table tbl = table.new(
+  getPosition(i_pos), 3, 4,
+  border_width=1, border_color=color.new(color.gray, 60),
+  frame_width=1, frame_color=color.new(color.gray, 60),
+  bgcolor=i_bg)
+
+if barstate.islast
+
+    // --- Row 0: Title (merged across all columns) ---
+    table.merge_cells(tbl, 0, 0, 2, 0)
+    table.cell(tbl, 0, 0, "  CVD Divergence  ",
+      text_color=color.white, bgcolor=color.new(color.blue, 50),
+      text_size=getFontSize(i_size), text_halign=text.align_center)
+
+    // --- Row 1: Column Headers ---
+    table.cell(tbl, 0, 1, "  Metric  ",
+      text_color=color.white, bgcolor=color.new(color.blue, 60),
+      text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.cell(tbl, 1, 1, "  Bullish  ",
+      text_color=color.white, bgcolor=color.new(color.blue, 60),
+      text_size=getFontSize(i_size), text_halign=text.align_center)
+    table.cell(tbl, 2, 1, "  Bearish  ",
+      text_color=color.white, bgcolor=color.new(color.blue, 60),
+      text_size=getFontSize(i_size), text_halign=text.align_center)
+
+    // --- Row 2: Absorption ---
+    table.cell(tbl, 0, 2, "  Absorption  ",
+      text_color=color.white, text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.cell(tbl, 1, 2, bull_absorption == 1 ? "  ON  " : "  -  ",
+      text_color=bull_absorption == 1 ? color.black : i_inactive_color,
+      bgcolor=bull_absorption == 1 ? i_bull_color : na,
+      text_size=getFontSize(i_size), text_halign=text.align_center)
+    table.cell(tbl, 2, 2, bear_absorption == 1 ? "  ON  " : "  -  ",
+      text_color=bear_absorption == 1 ? color.black : i_inactive_color,
+      bgcolor=bear_absorption == 1 ? i_bear_color : na,
+      text_size=getFontSize(i_size), text_halign=text.align_center)
+
+    // --- Row 3: Exhaustion ---
+    table.cell(tbl, 0, 3, "  Exhaustion  ",
+      text_color=color.white, text_size=getFontSize(i_size), text_halign=text.align_left)
+    table.cell(tbl, 1, 3, bull_exhaustion == 1 ? "  ON  " : "  -  ",
+      text_color=bull_exhaustion == 1 ? color.black : i_inactive_color,
+      bgcolor=bull_exhaustion == 1 ? i_bull_color : na,
+      text_size=getFontSize(i_size), text_halign=text.align_center)
+    table.cell(tbl, 2, 3, bear_exhaustion == 1 ? "  ON  " : "  -  ",
+      text_color=bear_exhaustion == 1 ? color.black : i_inactive_color,
+      bgcolor=bear_exhaustion == 1 ? i_bear_color : na,
+      text_size=getFontSize(i_size), text_halign=text.align_center)
+
+// =========================================================================
+// ALERTS
+// =========================================================================
+alertcondition(bull_absorption == 1 and isPl,
+  title="Bullish Absorption Divergence",
+  message="CVD Bullish Absorption: Price LL but CVD HL — selling absorbed by hidden buying")
+alertcondition(bear_absorption == 1 and isPh,
+  title="Bearish Absorption Divergence",
+  message="CVD Bearish Absorption: Price HH but CVD LH — buying absorbed by hidden selling")
+alertcondition(bull_exhaustion == 1 and isPl,
+  title="Bullish Exhaustion Divergence",
+  message="CVD Bullish Exhaustion: CVD LL but Price HL — selling pressure exhausting")
+alertcondition(bear_exhaustion == 1 and isPh,
+  title="Bearish Exhaustion Divergence",
+  message="CVD Bearish Exhaustion: CVD HH but Price LH — buying pressure exhausting")
