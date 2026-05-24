@@ -142,7 +142,6 @@ labelPosition = input.string("Above Line", "Label Position", options=["Above Lin
 labelOffset   = input.int(5, "Label Offset (bars)", minval=0, maxval=50, group=grpLabel, tooltip="How far to the right the labels float past the latest bar.")
 labelSize     = input.string("small", "Label Size", options=["tiny", "small", "normal", "large"], group=grpLabel)
 extendRight   = input.bool(true, "Extend Lines to the Right", group=grpLabel)
-lineLookback  = input.int(2, "Days of History to Keep on Chart", minval=1, maxval=10, group=grpLabel, tooltip="How many prior days' levels to keep drawn. Lower = cleaner chart.")
 
 // ============================================================================
 // HELPERS
