@@ -1,0 +1,280 @@
+
+//@version=6
+indicator("CVD Divergence Table", overlay=true)
+
+// ============================================================
+// ============   INPUTS    ===================================
+// ============================================================
+grp_preset = "Preset"
+preset = input.string("Manual", "Chart Preset", options=["Manual","1-min Scalp","5-min Context","RTH Open (ES 10:00–11:30)"], group=grp_preset, tooltip="Non-Manual presets override the detection + reset settings below. Display/alert inputs always apply.")
+
+grp_calc = "CVD Calculation"
+anchorPeriodIn = input.string("Session", "Reset CVD on", options=["Session","Day","Week","Never","RTH Open"], group=grp_calc, tooltip="RTH Open zeroes CVD at 09:30 ET — best for trading the morning move in isolation.")
+lowerTFIn      = input.timeframe("1", "Lower TF for delta sampling", group=grp_calc, tooltip="Must be smaller than chart timeframe. Use '1S' on paid plans for best morning granularity, '1' on free.")
+
+grp_div = "Divergence Detection"
+pivotLenIn    = input.int(5, "Pivot lookback (bars left/right)", minval=2, maxval=20, group=grp_div)
+maxBarsBackIn = input.int(50, "Max bars between pivots", minval=10, maxval=200, group=grp_div)
+signalHoldIn  = input.int(5, "Bars to keep last signal visible", minval=1, maxval=50, group=grp_div, tooltip="How long the most recent divergence stays shown before going stale.")
+showHiddenIn  = input.bool(false, "Detect Hidden divergences too", group=grp_div, tooltip="Off = only Regular (reversal) divergences feed the verdict. Cleaner for scalping.")
+
+grp_ctx = "Entry Context"
+vwapStretchHi = input.float(0.30, "VWAP stretch warning (%)", minval=0.05, step=0.05, group=grp_ctx, tooltip="If price is more than this % from VWAP, the stretch cell turns amber — price may be extended, fade risk.")
+freshArrowOnly = input.bool(true, "Only show arrow when signal ≤1 bar old", group=grp_ctx, tooltip="Prevents chasing. Arrow only prints on the freshest signals.")
+useWindow      = input.bool(true, "Gray verdict outside RTH window", group=grp_ctx, tooltip="Verdict shows OFF-HRS outside your trade window so you don't act on off-hours signals.")
+tradeSession   = input.session("1000-1130", "Trade window (ET)", group=grp_ctx)
+
+grp_disp = "Display"
+tablePos     = input.string("Top Right", "Table Position", options=["Top Left","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Right"], group=grp_disp)
+fontSizeStr  = input.string("Normal", "Font Size", options=["Tiny","Small","Normal","Large","Huge"], group=grp_disp)
+showArrows   = input.bool(true, "Show LONG/SHORT OK arrows on chart", group=grp_disp)
+
+grp_alert = "Alerts"
+alertOnRegBull = input.bool(true, "Alert on Regular Bullish Div", group=grp_alert)
+alertOnRegBear = input.bool(true, "Alert on Regular Bearish Div", group=grp_alert)
+alertOnHidBull = input.bool(false,"Alert on Hidden Bullish Div",  group=grp_alert)
+alertOnHidBear = input.bool(false,"Alert on Hidden Bearish Div",  group=grp_alert)
+
+// ============================================================
+// ============   CONSTANTS    ================================
+// ============================================================
+const int SIG_NONE    = 0
+const int SIG_REGBULL = 1
+const int SIG_REGBEAR = 2
+const int SIG_HIDBULL = 3
+const int SIG_HIDBEAR = 4
+
+const color COL_BUY  = color.teal
+const color COL_SELL = color.red
+const color COL_NEUT = color.gray
+
+// ============================================================
+// ============   APPLY PRESET    =============================
+// ============================================================
+isPreset = preset != "Manual"
+
+pivotLen    = preset == "1-min Scalp" ? 3 : preset == "5-min Context" ? 5 : preset == "RTH Open (ES 10:00–11:30)" ? 3 : pivotLenIn
+maxBarsBack = preset == "1-min Scalp" ? 30 : preset == "5-min Context" ? 40 : preset == "RTH Open (ES 10:00–11:30)" ? 20 : maxBarsBackIn
+signalHold  = preset == "1-min Scalp" ? 3 : preset == "5-min Context" ? 4 : preset == "RTH Open (ES 10:00–11:30)" ? 2 : signalHoldIn
+showHidden  = isPreset ? false : showHiddenIn
+anchorPeriod = preset == "RTH Open (ES 10:00–11:30)" ? "RTH Open" : preset == "Manual" ? anchorPeriodIn : "Day"
+lowerTF      = lowerTFIn
+
+// ============================================================
+// ============   HELPERS    ==================================
+// ============================================================
+f_pos() =>
+    p = tablePos == "Top Left" ? position.top_left : tablePos == "Top Right" ? position.top_right : tablePos == "Middle Left" ? position.middle_left : tablePos == "Middle Right" ? position.middle_right : tablePos == "Bottom Left" ? position.bottom_left : position.bottom_right
+    p
+
+f_size() =>
+    s = fontSizeStr == "Tiny" ? size.tiny : fontSizeStr == "Small" ? size.small : fontSizeStr == "Normal" ? size.normal : fontSizeStr == "Large" ? size.large : size.huge
+    s
+
+f_sigText(int code) =>
+    t = code == SIG_REGBULL ? "RB ▲" : code == SIG_REGBEAR ? "RB ▼" : code == SIG_HIDBULL ? "HB ▲" : code == SIG_HIDBEAR ? "HB ▼" : "—"
+    t
+
+f_sigIsLong(int code)  => code == SIG_REGBULL or code == SIG_HIDBULL
+f_sigIsShort(int code) => code == SIG_REGBEAR or code == SIG_HIDBEAR
+
+f_cell(table t, int col, int row, string txt, color bg) =>
+    table.cell(t, col, row, txt, bgcolor=bg, text_color=color.white, text_size=f_size())
+
+// ============================================================
+// ============   CVD CALCULATION (range-weighted)   ==========
+// ============================================================
+deltaArr = request.security_lower_tf(syminfo.tickerid, lowerTF, high == low ? 0.0 : volume * (close - open) / (high - low))
+
+float barDelta = na(deltaArr) or array.size(deltaArr) == 0 ? 0.0 : array.sum(deltaArr)
+
+sessionReset = ta.change(time("D", "1800-1700:1234567", "America/New_York")) != 0
+dayReset     = ta.change(time("D")) != 0
+weekReset    = ta.change(time("W")) != 0
+rthReset     = ta.change(time("D", "0930-1600:23456", "America/New_York")) != 0
+
+doReset      = anchorPeriod == "Session" ? sessionReset : anchorPeriod == "Day" ? dayReset : anchorPeriod == "Week" ? weekReset : anchorPeriod == "RTH Open" ? rthReset : false
+
+var float cvd = 0.0
+cvd := doReset ? barDelta : cvd + barDelta
+
+// ============================================================
+// ============   VWAP (entry context)    =====================
+// ============================================================
+vwapVal     = ta.vwap(hlc3)
+vwapStretch = na(vwapVal) or vwapVal == 0 ? na : (close - vwapVal) / vwapVal * 100.0
+
+// ============================================================
+// ============   PIVOTS (CVD bar-aligned to price)   =========
+// ============================================================
+priceHi = ta.pivothigh(high, pivotLen, pivotLen)
+priceLo = ta.pivotlow(low,   pivotLen, pivotLen)
+
+cvdAtPivot   = cvd[pivotLen]
+priceAtPivot = high[pivotLen]  // for highs; lows handled separately below
+
+var float pHi_curr    = na
+var int   pHi_currBar = na
+var float pHi_prev    = na
+var int   pHi_prevBar = na
+var float cHi_curr    = na
+var float cHi_prev    = na
+
+var float pLo_curr    = na
+var int   pLo_currBar = na
+var float pLo_prev    = na
+var int   pLo_prevBar = na
+var float cLo_curr    = na
+var float cLo_prev    = na
+
+if not na(priceHi)
+    pHi_prev    := pHi_curr
+    pHi_prevBar := pHi_currBar
+    cHi_prev    := cHi_curr
+    pHi_curr    := priceHi
+    pHi_currBar := bar_index - pivotLen
+    cHi_curr    := cvdAtPivot
+
+if not na(priceLo)
+    pLo_prev    := pLo_curr
+    pLo_prevBar := pLo_currBar
+    cLo_prev    := cLo_curr
+    pLo_curr    := priceLo
+    pLo_currBar := bar_index - pivotLen
+    cLo_curr    := cvdAtPivot
+
+// ============================================================
+// ============   DIVERGENCE LOGIC    =========================
+// ============================================================
+newPriceHi = not na(priceHi)
+newPriceLo = not na(priceLo)
+
+havePrevHi = not na(pHi_prev) and not na(cHi_prev) and not na(cHi_curr)
+havePrevLo = not na(pLo_prev) and not na(cLo_prev) and not na(cLo_curr)
+
+inRangeHi = not na(pHi_currBar) and not na(pHi_prevBar) and (pHi_currBar - pHi_prevBar) <= maxBarsBack
+inRangeLo = not na(pLo_currBar) and not na(pLo_prevBar) and (pLo_currBar - pLo_prevBar) <= maxBarsBack
+
+regBear = newPriceHi and havePrevHi and inRangeHi and pHi_curr > pHi_prev and cHi_curr < cHi_prev
+regBull = newPriceLo and havePrevLo and inRangeLo and pLo_curr < pLo_prev and cLo_curr > cLo_prev
+hidBear = showHidden and newPriceHi and havePrevHi and inRangeHi and pHi_curr < pHi_prev and cHi_curr > cHi_prev
+hidBull = showHidden and newPriceLo and havePrevLo and inRangeLo and pLo_curr > pLo_prev and cLo_curr < cLo_prev
+
+// ============================================================
+// ============   TRACK LAST SIGNAL + STRENGTH    =============
+// ============================================================
+var int   lastSigCode = SIG_NONE
+var int   lastSigBar  = na
+var float lastSigStr  = na   // divergence strength = |CVD swing delta|
+var float lastSigPx   = na   // price level of the divergence pivot
+
+if regBull
+    lastSigCode := SIG_REGBULL
+    lastSigBar  := bar_index
+    lastSigStr  := math.abs(cLo_curr - cLo_prev)
+    lastSigPx   := pLo_curr
+else if regBear
+    lastSigCode := SIG_REGBEAR
+    lastSigBar  := bar_index
+    lastSigStr  := math.abs(cHi_curr - cHi_prev)
+    lastSigPx   := pHi_curr
+else if hidBull
+    lastSigCode := SIG_HIDBULL
+    lastSigBar  := bar_index
+    lastSigStr  := math.abs(cLo_curr - cLo_prev)
+    lastSigPx   := pLo_curr
+else if hidBear
+    lastSigCode := SIG_HIDBEAR
+    lastSigBar  := bar_index
+    lastSigStr  := math.abs(cHi_curr - cHi_prev)
+    lastSigPx   := pHi_curr
+
+barsSinceSig = na(lastSigBar) ? na : bar_index - lastSigBar
+sigFresh     = not na(barsSinceSig) and barsSinceSig <= signalHold
+
+// Session window
+inWindow = not na(time(timeframe.period, tradeSession, "America/New_York"))
+windowOk = not useWindow or inWindow
+
+biasTxt = (not sigFresh) ? "WAIT" : (not windowOk) ? "OFF-HRS" : f_sigIsLong(lastSigCode) ? "LONG OK" : f_sigIsShort(lastSigCode) ? "SHORT OK" : "WAIT"
+
+cvdSlope = cvd - cvd[pivotLen]
+cvdTrend = cvdSlope > 0 ? "▲ Buyers" : cvdSlope < 0 ? "▼ Sellers" : "■ Flat"
+
+// Strength tier (relative to a rolling reference of recent strengths)
+var float strRef = na
+if sigFresh and barsSinceSig == 0
+    strRef := na(strRef) ? lastSigStr : strRef * 0.8 + lastSigStr * 0.2  // slow EMA of strengths
+strTier = na(lastSigStr) or na(strRef) ? "—" : lastSigStr >= strRef * 1.2 ? "STRONG" : lastSigStr <= strRef * 0.6 ? "weak" : "med"
+
+// ============================================================
+// ============   ARROWS (freshness-gated)    =================
+// ============================================================
+longTrigger  = (regBull or hidBull) and windowOk
+shortTrigger = (regBear or hidBear) and windowOk
+
+// With freshArrowOnly, the trigger bar IS bar 0, so it always passes;
+// the gate mainly suppresses re-plots and respects the window.
+showLong  = showArrows and longTrigger
+showShort = showArrows and shortTrigger
+
+plotshape(showLong,  title="LONG OK",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, offset=-pivotLen)
+plotshape(showShort, title="SHORT OK", style=shape.triangledown, location=location.abovebar, color=color.new(COL_SELL, 0),  size=size.small, offset=-pivotLen)
+
+// ============================================================
+// ============   TABLE    ====================================
+// ============================================================
+if barstate.islast
+    var table tbl = table.new(f_pos(), 2, 10, border_width=1)
+
+    hdrBg   = color.new(color.black, 20)
+    rowBg   = color.new(COL_NEUT, 75)
+    deltaBg = barDelta >= 0 ? color.new(COL_BUY, 40) : color.new(COL_SELL, 40)
+    cvdBg   = cvd >= 0      ? color.new(COL_BUY, 50) : color.new(COL_SELL, 50)
+    trendBg = cvdSlope > 0  ? color.new(COL_BUY, 40) : cvdSlope < 0 ? color.new(COL_SELL, 40) : rowBg
+    sigBg   = (not sigFresh or not windowOk) ? color.new(COL_NEUT, 60) : f_sigIsLong(lastSigCode) ? color.new(color.green, 20) : f_sigIsShort(lastSigCode) ? color.new(COL_SELL, 20) : color.new(COL_NEUT, 60)
+    biasBg  = biasTxt == "LONG OK" ? color.new(color.green, 10) : biasTxt == "SHORT OK" ? color.new(COL_SELL, 10) : color.new(COL_NEUT, 50)
+
+    stretchAmber = not na(vwapStretch) and math.abs(vwapStretch) > vwapStretchHi
+    stretchBg = na(vwapStretch) ? rowBg : stretchAmber ? color.new(color.orange, 20) : color.new(COL_NEUT, 60)
+
+    strBg = strTier == "STRONG" ? color.new(color.green, 20) : strTier == "weak" ? color.new(color.orange, 30) : rowBg
+
+    f_cell(tbl, 0, 0, "CVD",        hdrBg)
+    f_cell(tbl, 1, 0, anchorPeriod, hdrBg)
+
+    f_cell(tbl, 0, 1, "Preset", rowBg)
+    f_cell(tbl, 1, 1, preset,   rowBg)
+
+    f_cell(tbl, 0, 2, "Bar Δ",                     rowBg)
+    f_cell(tbl, 1, 2, str.tostring(barDelta, "#"), deltaBg)
+
+    f_cell(tbl, 0, 3, "Cum CVD",              rowBg)
+    f_cell(tbl, 1, 3, str.tostring(cvd, "#"), cvdBg)
+
+    f_cell(tbl, 0, 4, "Trend",  rowBg)
+    f_cell(tbl, 1, 4, cvdTrend, trendBg)
+
+    f_cell(tbl, 0, 5, "VWAP dist", rowBg)
+    f_cell(tbl, 1, 5, na(vwapStretch) ? "n/a" : str.tostring(vwapStretch, "#.##") + "%", stretchBg)
+
+    sigDisplay = sigFresh ? f_sigText(lastSigCode) + " (" + str.tostring(barsSinceSig) + "b)" : "—"
+    f_cell(tbl, 0, 6, "Last Div", rowBg)
+    f_cell(tbl, 1, 6, sigDisplay, sigBg)
+
+    f_cell(tbl, 0, 7, "Strength", rowBg)
+    f_cell(tbl, 1, 7, sigFresh ? strTier + " (" + str.tostring(lastSigStr, "#") + ")" : "—", strBg)
+
+    f_cell(tbl, 0, 8, "Div @ Px", rowBg)
+    f_cell(tbl, 1, 8, sigFresh and not na(lastSigPx) ? str.tostring(lastSigPx, format.mintick) : "—", rowBg)
+
+    f_cell(tbl, 0, 9, "Verdict", hdrBg)
+    f_cell(tbl, 1, 9, biasTxt,   biasBg)
+
+// ============================================================
+// ============   ALERTS    ===================================
+// ============================================================
+alertcondition(alertOnRegBull and regBull, title="CVD Regular Bullish Divergence", message="CVD Reg Bull Div on {{ticker}} {{interval}} — price LL, CVD HL.")
+alertcondition(alertOnRegBear and regBear, title="CVD Regular Bearish Divergence", message="CVD Reg Bear Div on {{ticker}} {{interval}} — price HH, CVD LH.")
+alertcondition(alertOnHidBull and hidBull, title="CVD Hidden Bullish Divergence",  message="CVD Hidden Bull Div on {{ticker}} {{interval}} — continuation up.")
+alertcondition(alertOnHidBear and hidBear, title="CVD Hidden Bearish Divergence",  message="CVD Hidden Bear Div on {{ticker}} {{interval}} — continuation down.")

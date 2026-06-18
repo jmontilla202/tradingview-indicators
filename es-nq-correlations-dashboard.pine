@@ -1,0 +1,208 @@
+//@version=6
+indicator("ES/NQ Correlation Dashboard", overlay=true)
+
+// ============================================================
+// ============   INPUTS — DISPLAY / TABLE   ==================
+// ============================================================
+grp_disp = "Display"
+tablePos     = input.string("Top Right", "Table Position", options=["Top Left","Top Right","Middle Left","Middle Right","Bottom Left","Bottom Right"], group=grp_disp)
+fontSizeStr  = input.string("Normal", "Font Size", options=["Tiny","Small","Normal","Large","Huge"], group=grp_disp)
+showHeader   = input.bool(true, "Show Header Row", group=grp_disp)
+showOnlyDisagree = input.bool(false, "Show ONLY disagreements", group=grp_disp)
+showSummary  = input.bool(true, "Show summary row (agree/disagree counts)", group=grp_disp)
+
+grp_tf = "Timeframe & Lookback"
+useRthPreset = input.bool(true, "Use RTH morning preset (5m / ~45min)", group=grp_tf, tooltip="ON = 5m timeframe, lookback 9 (~45 min) — tuned for 10:00–11:30 ET trading. OFF = use the manual settings below.")
+corrTFin     = input.timeframe("15", "Correlation Timeframe (manual)", group=grp_tf, tooltip="Used only when the RTH preset is OFF. 15m for general intraday, 30m for pre/post regime reads.")
+lookbackIn   = input.int(20, "Bars for % change / trend (manual)", minval=3, maxval=200, group=grp_tf)
+threshPct    = input.float(0.05, "Minimum move % to count as directional", step=0.01, group=grp_tf)
+
+corrTF   = useRthPreset ? "5" : corrTFin
+lookback = useRthPreset ? 9   : lookbackIn
+
+grp_tick = "TICK Breadth"
+tickSmooth   = input.bool(true, "Smooth TICK (EMA of breadth)", group=grp_tick, tooltip="ON = EMA of TICK reflects breadth BIAS over recent bars (less noisy, recommended). OFF = raw instantaneous TICK (fastest but whippy).")
+tickEmaLen   = input.int(5, "TICK EMA length", minval=2, maxval=50, group=grp_tick, tooltip="On 5m bars, 5 ≈ last 25 min of breadth bias. Higher = smoother/slower.")
+tickDeadband = input.int(100, "TICK neutral dead-band (±)", minval=0, maxval=500, group=grp_tick, tooltip="TICK readings between -X and +X count as neutral, not directional. Filters chop near zero.")
+
+grp_alert = "Alerts"
+alertThresh   = input.int(3, "Disagreement count to trigger alert", minval=1, maxval=17, group=grp_alert, tooltip="Fires when this many assets are simultaneously disagreeing with their expected correlation.")
+alertOnNewBar = input.bool(true, "Only alert on bar close (not every tick)", group=grp_alert)
+sessionFilter = input.bool(true, "Only arm alert during RTH window", group=grp_alert, tooltip="Restricts alerts to your trade window. Table still updates all day.")
+alertSession  = input.session("1000-1130", "Alert window (ET)", group=grp_alert, tooltip="Default 10:00–11:30 ET. Uses America/New_York time regardless of chart TZ.")
+
+grp_sym = "Symbols"
+sym_ES   = input.symbol("CME_MINI:ES1!",  "ES",    group=grp_sym)
+sym_NQ   = input.symbol("CME_MINI:NQ1!",  "NQ",    group=grp_sym)
+sym_RTY  = input.symbol("CME_MINI:RTY1!", "RTY",   group=grp_sym)
+sym_YM   = input.symbol("CBOT_MINI:YM1!", "YM",    group=grp_sym)
+sym_TICK = input.symbol("USI:TICK",       "TICK",  group=grp_sym)
+sym_VIX  = input.symbol("CBOE:VIX",       "VIX",   group=grp_sym)
+sym_DXY  = input.symbol("TVC:DXY",        "DXY",   group=grp_sym)
+sym_US10 = input.symbol("TVC:US10Y",      "US10Y", group=grp_sym)
+sym_US02 = input.symbol("TVC:US02Y",      "US02Y", group=grp_sym)
+sym_ZN   = input.symbol("CBOT:ZN1!",      "/ZN",   group=grp_sym)
+sym_SMH  = input.symbol("AMEX:SMH",       "SMH",   group=grp_sym)
+sym_XLK  = input.symbol("AMEX:XLK",       "XLK",   group=grp_sym)
+sym_XLF  = input.symbol("AMEX:XLF",       "XLF",   group=grp_sym)
+sym_RSP  = input.symbol("AMEX:RSP",       "RSP",   group=grp_sym)
+sym_NVDA = input.symbol("NASDAQ:NVDA",    "NVDA",  group=grp_sym)
+sym_AAPL = input.symbol("NASDAQ:AAPL",    "AAPL",  group=grp_sym)
+sym_MSFT = input.symbol("NASDAQ:MSFT",    "MSFT",  group=grp_sym)
+sym_AMZN = input.symbol("NASDAQ:AMZN",    "AMZN",  group=grp_sym)
+
+// ============================================================
+// ============   HELPERS    ==================================
+// ============================================================
+f_pos() =>
+    p = tablePos == "Top Left" ? position.top_left : tablePos == "Top Right" ? position.top_right : tablePos == "Middle Left" ? position.middle_left : tablePos == "Middle Right" ? position.middle_right : tablePos == "Bottom Left" ? position.bottom_left : position.bottom_right
+    p
+
+f_size() =>
+    s = fontSizeStr == "Tiny" ? size.tiny : fontSizeStr == "Small" ? size.small : fontSizeStr == "Normal" ? size.normal : fontSizeStr == "Large" ? size.large : size.huge
+    s
+
+f_pct(sym) =>
+    c0 = request.security(sym, corrTF, close, lookahead=barmerge.lookahead_off)
+    cN = request.security(sym, corrTF, close[lookback], lookahead=barmerge.lookahead_off)
+    na(c0) or na(cN) or cN == 0 ? na : (c0 - cN) / cN * 100.0
+
+f_dir(p) => na(p) ? 0 : p > threshPct ? 1 : p < -threshPct ? -1 : 0
+
+f_status(anchorDir, assetDir, expectedSign) =>
+    anchorDir == 0 or assetDir == 0 ? "NEUTRAL" : (anchorDir * assetDir == expectedSign) ? "AGREE" : "DISAGREE"
+
+// ============================================================
+// ============   READ ALL ASSETS    ==========================
+// ============================================================
+p_ES   = f_pct(sym_ES),   d_ES   = f_dir(p_ES)
+p_NQ   = f_pct(sym_NQ),   d_NQ   = f_dir(p_NQ)
+p_RTY  = f_pct(sym_RTY),  d_RTY  = f_dir(p_RTY)
+p_YM   = f_pct(sym_YM),   d_YM   = f_dir(p_YM)
+p_VIX  = f_pct(sym_VIX),  d_VIX  = f_dir(p_VIX)
+p_DXY  = f_pct(sym_DXY),  d_DXY  = f_dir(p_DXY)
+p_US10 = f_pct(sym_US10), d_US10 = f_dir(p_US10)
+p_US02 = f_pct(sym_US02), d_US02 = f_dir(p_US02)
+p_ZN   = f_pct(sym_ZN),   d_ZN   = f_dir(p_ZN)
+p_SMH  = f_pct(sym_SMH),  d_SMH  = f_dir(p_SMH)
+p_XLK  = f_pct(sym_XLK),  d_XLK  = f_dir(p_XLK)
+p_XLF  = f_pct(sym_XLF),  d_XLF  = f_dir(p_XLF)
+p_RSP  = f_pct(sym_RSP),  d_RSP  = f_dir(p_RSP)
+p_NVDA = f_pct(sym_NVDA), d_NVDA = f_dir(p_NVDA)
+p_AAPL = f_pct(sym_AAPL), d_AAPL = f_dir(p_AAPL)
+p_MSFT = f_pct(sym_MSFT), d_MSFT = f_dir(p_MSFT)
+p_AMZN = f_pct(sym_AMZN), d_AMZN = f_dir(p_AMZN)
+
+// --- TICK breadth ---
+// Pull the smoothed series on the SAME lower TF, then sample via security.
+// EMA is computed inside the request so it smooths native TICK bars.
+tickRaw    = request.security(sym_TICK, corrTF, close, lookahead=barmerge.lookahead_off)
+tickEma    = request.security(sym_TICK, corrTF, ta.ema(close, tickEmaLen), lookahead=barmerge.lookahead_off)
+tickVal    = tickSmooth ? tickEma : tickRaw
+d_TICK     = na(tickVal) ? 0 : tickVal > tickDeadband ? 1 : tickVal < -tickDeadband ? -1 : 0
+
+// ============================================================
+// ============   STATUS PER ROW    ===========================
+// ============================================================
+s_NQ   = f_status(d_ES, d_NQ,   1)
+s_RTY  = f_status(d_ES, d_RTY,  1)
+s_YM   = f_status(d_ES, d_YM,   1)
+s_TICK = f_status(d_ES, d_TICK, 1)
+s_VIX  = f_status(d_NQ, d_VIX, -1)
+s_DXY  = f_status(d_NQ, d_DXY, -1)
+s_US10 = f_status(d_NQ, d_US10,-1)
+s_US02 = f_status(d_NQ, d_US02,-1)
+s_ZN   = f_status(d_NQ, d_ZN,   1)
+s_SMH  = f_status(d_NQ, d_SMH,  1)
+s_XLK  = f_status(d_NQ, d_XLK,  1)
+s_XLF  = f_status(d_ES, d_XLF,  1)
+s_RSP  = f_status(d_ES, d_RSP,  1)
+s_NVDA = f_status(d_NQ, d_NVDA, 1)
+s_AAPL = f_status(d_NQ, d_AAPL, 1)
+s_MSFT = f_status(d_NQ, d_MSFT, 1)
+s_AMZN = f_status(d_NQ, d_AMZN, 1)
+
+// ============================================================
+// ============   COUNTS    ===================================
+// ============================================================
+f_count(s) => s == "DISAGREE" ? 1 : 0
+disagreeCount = f_count(s_NQ) + f_count(s_RTY) + f_count(s_YM) + f_count(s_TICK) + f_count(s_VIX) + f_count(s_DXY) + f_count(s_US10) + f_count(s_US02) + f_count(s_ZN) + f_count(s_SMH) + f_count(s_XLK) + f_count(s_XLF) + f_count(s_RSP) + f_count(s_NVDA) + f_count(s_AAPL) + f_count(s_MSFT) + f_count(s_AMZN)
+
+f_agree(s) => s == "AGREE" ? 1 : 0
+agreeCount = f_agree(s_NQ) + f_agree(s_RTY) + f_agree(s_YM) + f_agree(s_TICK) + f_agree(s_VIX) + f_agree(s_DXY) + f_agree(s_US10) + f_agree(s_US02) + f_agree(s_ZN) + f_agree(s_SMH) + f_agree(s_XLK) + f_agree(s_XLF) + f_agree(s_RSP) + f_agree(s_NVDA) + f_agree(s_AAPL) + f_agree(s_MSFT) + f_agree(s_AMZN)
+
+// ============================================================
+// ============   SESSION FILTER + ALERTS    ==================
+// ============================================================
+inWindow = not sessionFilter or not na(time(timeframe.period, alertSession, "America/New_York"))
+
+freshCross  = disagreeCount >= alertThresh and disagreeCount[1] < alertThresh
+triggerCond = (alertOnNewBar ? barstate.isconfirmed : true) and freshCross and inWindow
+
+alertcondition(triggerCond, title="Correlation Disagreement Threshold Hit", message="ES/NQ correlation dashboard: {{plot_0}} assets disagreeing. Regime conflict — consider standing aside.")
+
+plot(disagreeCount, "Disagree Count", display=display.none)
+plot(agreeCount, "Agree Count", display=display.none)
+
+// ============================================================
+// ============   BUILD TABLE    ==============================
+// ============================================================
+var table tbl = table.new(f_pos(), 5, 22, border_width=1)
+
+f_color(status) =>
+    c = status == "AGREE" ? color.new(color.green, 75) : status == "DISAGREE" ? color.new(color.red, 55) : color.new(color.gray, 70)
+    c
+
+f_arrow(d) => d == 1 ? "▲" : d == -1 ? "▼" : "■"
+
+f_row(rowIdx, label, anchorTxt, dir, valTxt, status) =>
+    show = not showOnlyDisagree or status == "DISAGREE"
+    if show
+        bg = f_color(status)
+        table.cell(tbl, 0, rowIdx, label,        bgcolor=bg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 1, rowIdx, anchorTxt,    bgcolor=bg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 2, rowIdx, f_arrow(dir), bgcolor=bg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 3, rowIdx, valTxt,       bgcolor=bg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 4, rowIdx, status,       bgcolor=bg, text_color=color.white, text_size=f_size())
+
+f_pctTxt(p) => na(p) ? "n/a" : str.tostring(p, "#.##") + "%"
+
+if barstate.islast
+    table.clear(tbl, 0, 0, 4, 21)
+    r = 0
+    if showHeader
+        hdrBg = color.new(color.black, 30)
+        table.cell(tbl, 0, r, "Asset",  bgcolor=hdrBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 1, r, "vs",     bgcolor=hdrBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 2, r, "Dir",    bgcolor=hdrBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 3, r, "Δ% / val", bgcolor=hdrBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 4, r, "Status", bgcolor=hdrBg, text_color=color.white, text_size=f_size())
+        r += 1
+
+    tickLabel = tickSmooth ? "TICK~" : "TICK"
+    f_row(r, "NQ",     "ES", d_NQ,   f_pctTxt(p_NQ),  s_NQ),   r += 1
+    f_row(r, "RTY",    "ES", d_RTY,  f_pctTxt(p_RTY), s_RTY),  r += 1
+    f_row(r, "YM",     "ES", d_YM,   f_pctTxt(p_YM),  s_YM),   r += 1
+    f_row(r, tickLabel,"ES", d_TICK, na(tickVal) ? "n/a" : str.tostring(tickVal, "#"), s_TICK), r += 1
+    f_row(r, "VIX",    "NQ", d_VIX,  f_pctTxt(p_VIX), s_VIX),  r += 1
+    f_row(r, "DXY",    "NQ", d_DXY,  f_pctTxt(p_DXY), s_DXY),  r += 1
+    f_row(r, "US10Y",  "NQ", d_US10, f_pctTxt(p_US10),s_US10), r += 1
+    f_row(r, "US02Y",  "NQ", d_US02, f_pctTxt(p_US02),s_US02), r += 1
+    f_row(r, "/ZN",    "NQ", d_ZN,   f_pctTxt(p_ZN),  s_ZN),   r += 1
+    f_row(r, "SMH",    "NQ", d_SMH,  f_pctTxt(p_SMH), s_SMH),  r += 1
+    f_row(r, "XLK",    "NQ", d_XLK,  f_pctTxt(p_XLK), s_XLK),  r += 1
+    f_row(r, "XLF",    "ES", d_XLF,  f_pctTxt(p_XLF), s_XLF),  r += 1
+    f_row(r, "RSP",    "ES", d_RSP,  f_pctTxt(p_RSP), s_RSP),  r += 1
+    f_row(r, "NVDA",   "NQ", d_NVDA, f_pctTxt(p_NVDA),s_NVDA), r += 1
+    f_row(r, "AAPL",   "NQ", d_AAPL, f_pctTxt(p_AAPL),s_AAPL), r += 1
+    f_row(r, "MSFT",   "NQ", d_MSFT, f_pctTxt(p_MSFT),s_MSFT), r += 1
+    f_row(r, "AMZN",   "NQ", d_AMZN, f_pctTxt(p_AMZN),s_AMZN), r += 1
+
+    if showSummary
+        sumBg = disagreeCount >= alertThresh ? color.new(color.red, 30) : color.new(color.black, 30)
+        winTxt = sessionFilter ? (inWindow ? "[ARMED]" : "[off-hrs]") : ""
+        table.cell(tbl, 0, r, "SUMMARY",                          bgcolor=sumBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 1, r, winTxt,                             bgcolor=sumBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 2, r, "✔ " + str.tostring(agreeCount),    bgcolor=sumBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 3, r, "✘ " + str.tostring(disagreeCount), bgcolor=sumBg, text_color=color.white, text_size=f_size())
+        table.cell(tbl, 4, r, disagreeCount >= alertThresh ? "CONFLICT" : "OK", bgcolor=sumBg, text_color=color.white, text_size=f_size())

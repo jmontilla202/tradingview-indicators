@@ -1,9 +1,8 @@
-
 //@version=6
-indicator("Prior RTH Volume Profile Auto-Plotter", shorttitle="Prior VP Levels", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+indicator("Volume Profile Plotter", shorttitle="Volume Profile Plotter", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
 
 // ============================================================================
-// INPUTS — SESSION
+// INPUTS ΓÇö SESSION
 // ============================================================================
 grpSession = "Session Settings"
 rthSession    = input.session("0930-1600", "RTH Session (ET)",    group=grpSession, tooltip="Defines what counts as a 'day' for the Prior Day VP calculation.")
@@ -11,20 +10,20 @@ globexSession = input.session("1800-0930", "Globex Session (ET)", group=grpSessi
 weekStart     = input.string("Monday", "Week Starts On", options=["Sunday", "Monday"], group=grpSession, tooltip="Used to determine the prior week's range.")
 
 // ============================================================================
-// INPUTS — VP CALCULATION
+// INPUTS ΓÇö VP CALCULATION
 // ============================================================================
 grpVP = "Volume Profile Calculation"
 vpRows       = input.int(50, "VP Row Resolution", minval=20, maxval=200, group=grpVP, tooltip="Number of price bins used to build the profile. Higher = more precise levels but slower.")
 valueAreaPct = input.float(70.0, "Value Area %", minval=50.0, maxval=95.0, step=1.0, group=grpVP, tooltip="Standard is 70%. Defines what % of volume falls between VAH and VAL.")
 
 // ============================================================================
-// INPUTS — PRIOR DAY LEVELS (compact inline rows)
+// INPUTS ΓÇö PRIOR DAY LEVELS (compact inline rows)
 // ============================================================================
 grpPD = "Prior Day Levels"
 showPDVAH  = input.bool(true,  "Prior Day VAH", group=grpPD, inline="pdvah")
 pdVAHColor = input.color(color.new(#FFD600, 0), "", group=grpPD, inline="pdvah")
 pdVAHStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpPD, inline="pdvah")
-pdVAHWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdvah", tooltip="Width 1–4")
+pdVAHWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdvah", tooltip="Width 1ΓÇô4")
 
 showPDPOC  = input.bool(true,  "Prior Day POC", group=grpPD, inline="pdpoc")
 pdPOCColor = input.color(color.new(#FF6D00, 0), "", group=grpPD, inline="pdpoc")
@@ -52,7 +51,7 @@ pdMidStyle = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], g
 pdMidWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdmid")
 
 // ============================================================================
-// INPUTS — GLOBEX (OVERNIGHT) LEVELS (compact inline rows)
+// INPUTS ΓÇö GLOBEX (OVERNIGHT) LEVELS (compact inline rows)
 // ============================================================================
 grpGX = "Globex / Overnight Levels"
 showGXVAH  = input.bool(true,  "Globex VAH", group=grpGX, inline="gxvah", tooltip="Overnight value area high. Often reacts on RTH open.")
@@ -60,7 +59,7 @@ gxVAHColor = input.color(color.new(#69F0AE, 0), "", group=grpGX, inline="gxvah")
 gxVAHStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxvah")
 gxVAHWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxvah")
 
-showGXPOC  = input.bool(true,  "Globex POC", group=grpGX, inline="gxpoc", tooltip="Overnight POC. Where most overnight volume traded — often a key magnet at the open.")
+showGXPOC  = input.bool(true,  "Globex POC", group=grpGX, inline="gxpoc", tooltip="Overnight POC. Where most overnight volume traded ΓÇö often a key magnet at the open.")
 gxPOCColor = input.color(color.new(#00C853, 0), "", group=grpGX, inline="gxpoc")
 gxPOCStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxpoc")
 gxPOCWidth = input.int(2, "", minval=1, maxval=4, group=grpGX, inline="gxpoc")
@@ -70,12 +69,12 @@ gxVALColor = input.color(color.new(#69F0AE, 0), "", group=grpGX, inline="gxval")
 gxVALStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxval")
 gxVALWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxval")
 
-showGXH  = input.bool(true,  "Globex High (ONH)", group=grpGX, inline="gxh", tooltip="Overnight high — critical level for opening gap and initial drive analysis.")
+showGXH  = input.bool(true,  "Globex High (ONH)", group=grpGX, inline="gxh", tooltip="Overnight high ΓÇö critical level for opening gap and initial drive analysis.")
 gxhColor = input.color(color.new(#4DD0E1, 0), "", group=grpGX, inline="gxh")
 gxhStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxh")
 gxhWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxh")
 
-showGXL  = input.bool(true,  "Globex Low (ONL)", group=grpGX, inline="gxl", tooltip="Overnight low — critical level for opening gap and initial drive analysis.")
+showGXL  = input.bool(true,  "Globex Low (ONL)", group=grpGX, inline="gxl", tooltip="Overnight low ΓÇö critical level for opening gap and initial drive analysis.")
 gxlColor = input.color(color.new(#4DD0E1, 0), "", group=grpGX, inline="gxl")
 gxlStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxl")
 gxlWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxl")
@@ -86,7 +85,7 @@ gxMidStyle = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], g
 gxMidWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxmid")
 
 // ============================================================================
-// INPUTS — PRIOR WEEK LEVELS (compact inline rows)
+// INPUTS ΓÇö PRIOR WEEK LEVELS (compact inline rows)
 // ============================================================================
 grpPW = "Prior Week Levels"
 showPWVAH  = input.bool(true,  "Prior Week VAH", group=grpPW, inline="pwvah")
@@ -115,7 +114,7 @@ pwlStyle = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], gro
 pwlWidth = input.int(1, "", minval=1, maxval=4, group=grpPW, inline="pwl")
 
 // ============================================================================
-// INPUTS — DEVELOPING (CURRENT) RTH PROFILE (compact inline rows)
+// INPUTS ΓÇö DEVELOPING (CURRENT) RTH PROFILE (compact inline rows)
 // ============================================================================
 grpDev = "Developing (Current) RTH"
 showDevPOC  = input.bool(true, "Developing POC", group=grpDev, inline="dpoc", tooltip="Plots the live POC of today's RTH as it develops.")
@@ -134,7 +133,7 @@ devVALStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], 
 devVALWidth = input.int(1, "", minval=1, maxval=4, group=grpDev, inline="dval")
 
 // ============================================================================
-// INPUTS — LABELS & EXTENSION
+// INPUTS ΓÇö LABELS & EXTENSION
 // ============================================================================
 grpLabel = "Labels & Display"
 showLabels    = input.bool(true, "Show Level Labels", group=grpLabel)
@@ -328,7 +327,7 @@ if inGX
     array.push(gxVolumes, volume)
     gxEndBar := bar_index
 
-// Week — accumulate during RTH only
+// Week ΓÇö accumulate during RTH only
 if inRTH
     if newWeek
         array.clear(weekPrices)
@@ -348,7 +347,7 @@ if inRTH and array.size(dayPrices) > 5
     devVAH := devRes.vah
     devVAL := devRes.val
 
-// Developing Globex (live during overnight session) — overwrites stored values as session builds
+// Developing Globex (live during overnight session) ΓÇö overwrites stored values as session builds
 if inGX and array.size(gxPrices) > 5
     gxRes = calcProfile(gxPrices, gxVolumes, vpRows, valueAreaPct)
     gxPOCv := gxRes.poc
@@ -369,7 +368,7 @@ if gxStarted
 
 
 
-// Note: Globex levels finalize naturally at gxEnded (09:30 ET) — the last "developing"
+// Note: Globex levels finalize naturally at gxEnded (09:30 ET) ΓÇö the last "developing"
 // calculation on the bar before close becomes the locked final value, and stays until
 // the next gxStarted event (18:00 ET) clears them and a new session begins.
 

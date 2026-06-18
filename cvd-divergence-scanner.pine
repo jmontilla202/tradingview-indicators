@@ -1,0 +1,195 @@
+
+//@version=6
+indicator("CVD Divergence Scanner", shorttitle="CVD Divergence", overlay=true, max_lines_count=100, max_labels_count=100, max_boxes_count=500)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+grpSensitivity = "Divergence Sensitivity"
+sensitivity     = input.string("Balanced", "Alert Sensitivity", options=["Conservative", "Balanced", "Aggressive"], group=grpSensitivity, tooltip="Conservative = fewer but stronger signals. Aggressive = more signals, more noise.")
+pivotLeft       = input.int(5, "Pivot Lookback Left", minval=1, maxval=20, group=grpSensitivity, tooltip="Bars to the left required to confirm a pivot. Higher = stronger pivots.")
+pivotRight      = input.int(2, "Pivot Lookback Right", minval=1, maxval=10, group=grpSensitivity, tooltip="Bars to the right required to confirm a pivot. Lower = faster detection.")
+rangeMin        = input.int(5, "Min Bars Between Pivots", minval=1, group=grpSensitivity)
+rangeMax        = input.int(60, "Max Bars Between Pivots", minval=5, group=grpSensitivity)
+minDivPct       = input.float(0.05, "Min Divergence Strength (%)", minval=0.0, step=0.05, group=grpSensitivity, tooltip="Minimum percentage difference between pivots for divergence to count.")
+
+grpCVD = "CVD Settings"
+cvdAnchor   = input.string("Session", "CVD Anchor", options=["Session", "Day", "Week", "None"], group=grpCVD, tooltip="When to reset cumulative volume delta. Session is recommended for RTH scalping.")
+deltaMethod = input.string("Close vs Open", "Delta Method", options=["Close vs Open", "Range Weighted"], group=grpCVD, tooltip="Close vs Open: classic up/down volume. Range Weighted: distributes volume by where close falls in the bar's range (more nuanced).")
+
+grpVisual = "Candle Highlight"
+showHighlight    = input.bool(true, "Show Candle Highlight", group=grpVisual)
+bullColor        = input.color(#006400, "Bullish Divergence Color", group=grpVisual)
+bearColor        = input.color(#8B0000, "Bearish Divergence Color", group=grpVisual)
+highlightOpacity = input.int(50, "Highlight Opacity (%)", minval=0, maxval=100, group=grpVisual, tooltip="0 = fully visible, 100 = invisible")
+
+grpTable = "Status Table"
+showTable      = input.bool(true, "Show Status Table", group=grpTable)
+tablePos       = input.string("top_right", "Table Position", options=["top_left", "top_center", "top_right", "middle_left", "middle_right", "bottom_left", "bottom_center", "bottom_right"], group=grpTable)
+tableSize      = input.string("normal", "Table Text Size", options=["tiny", "small", "normal", "large"], group=grpTable)
+tableBgColor   = input.color(color.new(#1e1e1e, 10), "Table Background", group=grpTable)
+tableTextColor = input.color(color.white, "Table Text Color", group=grpTable)
+signalHoldBars = input.int(5, "Signal Hold Duration (bars)", minval=1, maxval=50, group=grpTable, tooltip="How long the signal circle stays lit after detection.")
+
+// ============================================================================
+// SENSITIVITY PRESETS
+// ============================================================================
+effPivotLeft  = sensitivity == "Conservative" ? math.max(pivotLeft, 7)  : sensitivity == "Aggressive" ? math.max(2, pivotLeft - 2) : pivotLeft
+effPivotRight = sensitivity == "Conservative" ? math.max(pivotRight, 3) : sensitivity == "Aggressive" ? math.max(1, pivotRight - 1) : pivotRight
+effMinDivPct  = sensitivity == "Conservative" ? minDivPct * 2.0 : sensitivity == "Aggressive" ? minDivPct * 0.5 : minDivPct
+
+// ============================================================================
+// CVD CALCULATION
+// ============================================================================
+anchorCondition = switch cvdAnchor
+    "Session" => ta.change(time("D")) != 0
+    "Day"     => ta.change(time("D")) != 0
+    "Week"    => ta.change(time("W")) != 0
+    "None"    => false
+    => false
+
+// Per-bar delta calculation (no lower-timeframe data required)
+float barDelta = 0.0
+if deltaMethod == "Range Weighted"
+    barRange = high - low
+    if barRange > 0
+        // Weight volume by where close sits within the bar's range: -1 (at low) to +1 (at high)
+        weight = ((close - low) - (high - close)) / barRange
+        barDelta := volume * weight
+    else
+        barDelta := 0.0
+else
+    barDelta := close > open ? volume : close < open ? -volume : 0.0
+
+var float cvd = 0.0
+cvd := anchorCondition ? barDelta : cvd + barDelta
+
+// ============================================================================
+// PIVOT DETECTION
+// ============================================================================
+priceHigh = ta.pivothigh(high, effPivotLeft, effPivotRight)
+priceLow  = ta.pivotlow(low,   effPivotLeft, effPivotRight)
+cvdHigh   = ta.pivothigh(cvd,  effPivotLeft, effPivotRight)
+cvdLow    = ta.pivotlow(cvd,   effPivotLeft, effPivotRight)
+
+var float lastPriceHigh1 = na, var float lastPriceHigh2 = na
+var int   lastPriceHighBar1 = na, var int lastPriceHighBar2 = na
+var float lastPriceLow1  = na, var float lastPriceLow2  = na
+var int   lastPriceLowBar1  = na, var int lastPriceLowBar2  = na
+
+var float lastCvdHigh1 = na, var float lastCvdHigh2 = na
+var float lastCvdLow1  = na, var float lastCvdLow2  = na
+
+if not na(priceHigh)
+    lastPriceHigh2 := lastPriceHigh1
+    lastPriceHighBar2 := lastPriceHighBar1
+    lastPriceHigh1 := priceHigh
+    lastPriceHighBar1 := bar_index - effPivotRight
+
+if not na(priceLow)
+    lastPriceLow2 := lastPriceLow1
+    lastPriceLowBar2 := lastPriceLowBar1
+    lastPriceLow1 := priceLow
+    lastPriceLowBar1 := bar_index - effPivotRight
+
+if not na(cvdHigh)
+    lastCvdHigh2 := lastCvdHigh1
+    lastCvdHigh1 := cvdHigh
+
+if not na(cvdLow)
+    lastCvdLow2 := lastCvdLow1
+    lastCvdLow1 := cvdLow
+
+// ============================================================================
+// DIVERGENCE DETECTION
+// ============================================================================
+bearishDiv = false
+if not na(priceHigh) and not na(lastPriceHigh2) and not na(lastCvdHigh1) and not na(lastCvdHigh2)
+    barsBetween = lastPriceHighBar1 - lastPriceHighBar2
+    if barsBetween >= rangeMin and barsBetween <= rangeMax
+        priceDiffPct = (lastPriceHigh1 - lastPriceHigh2) / lastPriceHigh2 * 100
+        if lastPriceHigh1 > lastPriceHigh2 and lastCvdHigh1 < lastCvdHigh2 and priceDiffPct >= effMinDivPct
+            bearishDiv := true
+
+bullishDiv = false
+if not na(priceLow) and not na(lastPriceLow2) and not na(lastCvdLow1) and not na(lastCvdLow2)
+    barsBetween = lastPriceLowBar1 - lastPriceLowBar2
+    if barsBetween >= rangeMin and barsBetween <= rangeMax
+        priceDiffPct = (lastPriceLow2 - lastPriceLow1) / lastPriceLow2 * 100
+        if lastPriceLow1 < lastPriceLow2 and lastCvdLow1 > lastCvdLow2 and priceDiffPct >= effMinDivPct
+            bullishDiv := true
+
+// ============================================================================
+// SIGNAL HOLD STATE
+// ============================================================================
+var int lastBullBar = na
+var int lastBearBar = na
+
+if bullishDiv
+    lastBullBar := bar_index
+if bearishDiv
+    lastBearBar := bar_index
+
+bullActive = not na(lastBullBar) and (bar_index - lastBullBar) <= signalHoldBars
+bearActive = not na(lastBearBar) and (bar_index - lastBearBar) <= signalHoldBars
+
+// ============================================================================
+// CANDLE HIGHLIGHT
+// ============================================================================
+bullHighlight = color.new(bullColor, highlightOpacity)
+bearHighlight = color.new(bearColor, highlightOpacity)
+
+bgcolor(showHighlight and bullishDiv ? bullHighlight : na, title="Bullish Divergence Highlight")
+bgcolor(showHighlight and bearishDiv ? bearHighlight : na, title="Bearish Divergence Highlight")
+
+// ============================================================================
+// STATUS TABLE
+// ============================================================================
+tablePosition = switch tablePos
+    "top_left"      => position.top_left
+    "top_center"    => position.top_center
+    "top_right"     => position.top_right
+    "middle_left"   => position.middle_left
+    "middle_right"  => position.middle_right
+    "bottom_left"   => position.bottom_left
+    "bottom_center" => position.bottom_center
+    "bottom_right"  => position.bottom_right
+    => position.top_right
+
+
+txtSize = switch tableSize
+    "tiny"   => size.tiny
+    "small"  => size.small
+    "normal" => size.normal
+    "large"  => size.large
+    => size.normal
+
+var table statusTable = table.new(tablePosition, 2, 3, bgcolor=tableBgColor, border_width=1, border_color=color.new(color.gray, 50), frame_color=color.new(color.gray, 50), frame_width=1)
+
+if showTable and barstate.islast
+    typeText  = bullActive ? "Accumulation" : bearActive ? "Exhaustion" : "—"
+    typeColor = bullActive ? color.new(#00C853, 0) : bearActive ? color.new(#FF1744, 0) : color.new(color.gray, 30)
+
+    signalSymbol = "●"
+    signalColor  = bullActive ? color.new(#00C853, 0) : bearActive ? color.new(#FF1744, 0) : color.new(#404040, 0)
+
+    // Row 1: Header (merged across 2 columns)
+    table.cell(statusTable, 0, 0, "  CVD Divergence  ", text_color=tableTextColor, text_size=txtSize, bgcolor=color.new(#2a2a2a, 0), text_halign=text.align_center)
+    table.cell(statusTable, 1, 0, "", text_color=tableTextColor, text_size=txtSize, bgcolor=color.new(#2a2a2a, 0))
+    table.merge_cells(statusTable, 0, 0, 1, 0)
+
+    // Row 2: Column headers
+    table.cell(statusTable, 0, 1, "  Type  ",   text_color=tableTextColor, text_size=txtSize, bgcolor=color.new(#252525, 0), text_halign=text.align_center)
+    table.cell(statusTable, 1, 1, "  Signal  ", text_color=tableTextColor, text_size=txtSize, bgcolor=color.new(#252525, 0), text_halign=text.align_center)
+
+    // Row 3: Values
+    table.cell(statusTable, 0, 2, "  " + typeText + "  ",     text_color=typeColor,   text_size=txtSize, text_halign=text.align_center)
+    table.cell(statusTable, 1, 2, "  " + signalSymbol + "  ", text_color=signalColor, text_size=txtSize, text_halign=text.align_center)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(bullishDiv, title="Bullish CVD Divergence (Accumulation)", message="CVD Bullish Divergence detected on {{ticker}} {{interval}} — possible accumulation")
+alertcondition(bearishDiv, title="Bearish CVD Divergence (Exhaustion)",  message="CVD Bearish Divergence detected on {{ticker}} {{interval}} — possible exhaustion")
+alertcondition(bullishDiv or bearishDiv, title="Any CVD Divergence", message="CVD Divergence detected on {{ticker}} {{interval}}")
