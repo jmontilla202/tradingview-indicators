@@ -1,0 +1,456 @@
+//@version=6
+indicator("Volume Profile Plotter", shorttitle="Volume Profile Plotter", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ============================================================================
+// INPUTS ΓÇö SESSION
+// ============================================================================
+grpSession = "Session Settings"
+rthSession    = input.session("0930-1600", "RTH Session (ET)",    group=grpSession, tooltip="Defines what counts as a 'day' for the Prior Day VP calculation.")
+globexSession = input.session("1800-0930", "Globex Session (ET)", group=grpSession, tooltip="Overnight/Globex session. Default: 6:00 PM ET previous day through 9:30 AM ET. Captures the overnight ES auction.")
+weekStart     = input.string("Monday", "Week Starts On", options=["Sunday", "Monday"], group=grpSession, tooltip="Used to determine the prior week's range.")
+
+// ============================================================================
+// INPUTS ΓÇö VP CALCULATION
+// ============================================================================
+grpVP = "Volume Profile Calculation"
+vpRows       = input.int(50, "VP Row Resolution", minval=20, maxval=200, group=grpVP, tooltip="Number of price bins used to build the profile. Higher = more precise levels but slower.")
+valueAreaPct = input.float(70.0, "Value Area %", minval=50.0, maxval=95.0, step=1.0, group=grpVP, tooltip="Standard is 70%. Defines what % of volume falls between VAH and VAL.")
+
+// ============================================================================
+// INPUTS ΓÇö PRIOR DAY LEVELS (compact inline rows)
+// ============================================================================
+grpPD = "Prior Day Levels"
+showPDVAH  = input.bool(true,  "Prior Day VAH", group=grpPD, inline="pdvah")
+pdVAHColor = input.color(color.new(#FFD600, 0), "", group=grpPD, inline="pdvah")
+pdVAHStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpPD, inline="pdvah")
+pdVAHWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdvah", tooltip="Width 1ΓÇô4")
+
+showPDPOC  = input.bool(true,  "Prior Day POC", group=grpPD, inline="pdpoc")
+pdPOCColor = input.color(color.new(#FF6D00, 0), "", group=grpPD, inline="pdpoc")
+pdPOCStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpPD, inline="pdpoc")
+pdPOCWidth = input.int(2, "", minval=1, maxval=4, group=grpPD, inline="pdpoc")
+
+showPDVAL  = input.bool(true,  "Prior Day VAL", group=grpPD, inline="pdval")
+pdVALColor = input.color(color.new(#FFD600, 0), "", group=grpPD, inline="pdval")
+pdVALStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpPD, inline="pdval")
+pdVALWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdval")
+
+showPDH  = input.bool(true,  "Prior Day High (PDH)", group=grpPD, inline="pdh")
+pdhColor = input.color(color.new(#00E5FF, 0), "", group=grpPD, inline="pdh")
+pdhStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpPD, inline="pdh")
+pdhWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdh")
+
+showPDL  = input.bool(true,  "Prior Day Low (PDL)", group=grpPD, inline="pdl")
+pdlColor = input.color(color.new(#00E5FF, 0), "", group=grpPD, inline="pdl")
+pdlStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpPD, inline="pdl")
+pdlWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdl")
+
+showPDMID  = input.bool(false, "Prior Day Mid", group=grpPD, inline="pdmid")
+pdMidColor = input.color(color.new(color.gray, 30), "", group=grpPD, inline="pdmid")
+pdMidStyle = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group=grpPD, inline="pdmid")
+pdMidWidth = input.int(1, "", minval=1, maxval=4, group=grpPD, inline="pdmid")
+
+// ============================================================================
+// INPUTS ΓÇö GLOBEX (OVERNIGHT) LEVELS (compact inline rows)
+// ============================================================================
+grpGX = "Globex / Overnight Levels"
+showGXVAH  = input.bool(true,  "Globex VAH", group=grpGX, inline="gxvah", tooltip="Overnight value area high. Often reacts on RTH open.")
+gxVAHColor = input.color(color.new(#69F0AE, 0), "", group=grpGX, inline="gxvah")
+gxVAHStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxvah")
+gxVAHWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxvah")
+
+showGXPOC  = input.bool(true,  "Globex POC", group=grpGX, inline="gxpoc", tooltip="Overnight POC. Where most overnight volume traded ΓÇö often a key magnet at the open.")
+gxPOCColor = input.color(color.new(#00C853, 0), "", group=grpGX, inline="gxpoc")
+gxPOCStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxpoc")
+gxPOCWidth = input.int(2, "", minval=1, maxval=4, group=grpGX, inline="gxpoc")
+
+showGXVAL  = input.bool(true,  "Globex VAL", group=grpGX, inline="gxval")
+gxVALColor = input.color(color.new(#69F0AE, 0), "", group=grpGX, inline="gxval")
+gxVALStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxval")
+gxVALWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxval")
+
+showGXH  = input.bool(true,  "Globex High (ONH)", group=grpGX, inline="gxh", tooltip="Overnight high ΓÇö critical level for opening gap and initial drive analysis.")
+gxhColor = input.color(color.new(#4DD0E1, 0), "", group=grpGX, inline="gxh")
+gxhStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxh")
+gxhWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxh")
+
+showGXL  = input.bool(true,  "Globex Low (ONL)", group=grpGX, inline="gxl", tooltip="Overnight low ΓÇö critical level for opening gap and initial drive analysis.")
+gxlColor = input.color(color.new(#4DD0E1, 0), "", group=grpGX, inline="gxl")
+gxlStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxl")
+gxlWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxl")
+
+showGXMID  = input.bool(false, "Globex Mid", group=grpGX, inline="gxmid")
+gxMidColor = input.color(color.new(color.gray, 30), "", group=grpGX, inline="gxmid")
+gxMidStyle = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group=grpGX, inline="gxmid")
+gxMidWidth = input.int(1, "", minval=1, maxval=4, group=grpGX, inline="gxmid")
+
+// ============================================================================
+// INPUTS ΓÇö PRIOR WEEK LEVELS (compact inline rows)
+// ============================================================================
+grpPW = "Prior Week Levels"
+showPWVAH  = input.bool(true,  "Prior Week VAH", group=grpPW, inline="pwvah")
+pwVAHColor = input.color(color.new(#B388FF, 0), "", group=grpPW, inline="pwvah")
+pwVAHStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpPW, inline="pwvah")
+pwVAHWidth = input.int(1, "", minval=1, maxval=4, group=grpPW, inline="pwvah")
+
+showPWPOC  = input.bool(true,  "Prior Week POC", group=grpPW, inline="pwpoc")
+pwPOCColor = input.color(color.new(#7C4DFF, 0), "", group=grpPW, inline="pwpoc")
+pwPOCStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpPW, inline="pwpoc")
+pwPOCWidth = input.int(2, "", minval=1, maxval=4, group=grpPW, inline="pwpoc")
+
+showPWVAL  = input.bool(true,  "Prior Week VAL", group=grpPW, inline="pwval")
+pwVALColor = input.color(color.new(#B388FF, 0), "", group=grpPW, inline="pwval")
+pwVALStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpPW, inline="pwval")
+pwVALWidth = input.int(1, "", minval=1, maxval=4, group=grpPW, inline="pwval")
+
+showPWH  = input.bool(false, "Prior Week High (PWH)", group=grpPW, inline="pwh")
+pwhColor = input.color(color.new(#80DEEA, 0), "", group=grpPW, inline="pwh")
+pwhStyle = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group=grpPW, inline="pwh")
+pwhWidth = input.int(1, "", minval=1, maxval=4, group=grpPW, inline="pwh")
+
+showPWL  = input.bool(false, "Prior Week Low (PWL)", group=grpPW, inline="pwl")
+pwlColor = input.color(color.new(#80DEEA, 0), "", group=grpPW, inline="pwl")
+pwlStyle = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], group=grpPW, inline="pwl")
+pwlWidth = input.int(1, "", minval=1, maxval=4, group=grpPW, inline="pwl")
+
+// ============================================================================
+// INPUTS ΓÇö DEVELOPING (CURRENT) RTH PROFILE (compact inline rows)
+// ============================================================================
+grpDev = "Developing (Current) RTH"
+showDevPOC  = input.bool(true, "Developing POC", group=grpDev, inline="dpoc", tooltip="Plots the live POC of today's RTH as it develops.")
+devPOCColor = input.color(color.new(#FF1744, 0), "", group=grpDev, inline="dpoc")
+devPOCStyle = input.string("Solid", "", options=["Solid", "Dashed", "Dotted"], group=grpDev, inline="dpoc")
+devPOCWidth = input.int(2, "", minval=1, maxval=4, group=grpDev, inline="dpoc")
+
+showDevVAH  = input.bool(true, "Developing VAH", group=grpDev, inline="dvah")
+devVAHColor = input.color(color.new(#FF80AB, 0), "", group=grpDev, inline="dvah")
+devVAHStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpDev, inline="dvah")
+devVAHWidth = input.int(1, "", minval=1, maxval=4, group=grpDev, inline="dvah")
+
+showDevVAL  = input.bool(true, "Developing VAL", group=grpDev, inline="dval")
+devVALColor = input.color(color.new(#FF80AB, 0), "", group=grpDev, inline="dval")
+devVALStyle = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], group=grpDev, inline="dval")
+devVALWidth = input.int(1, "", minval=1, maxval=4, group=grpDev, inline="dval")
+
+// ============================================================================
+// INPUTS ΓÇö LABELS & EXTENSION
+// ============================================================================
+grpLabel = "Labels & Display"
+showLabels    = input.bool(true, "Show Level Labels", group=grpLabel)
+labelPosition = input.string("Above Line", "Label Position", options=["Above Line", "Below Line", "On Line"], group=grpLabel, tooltip="Where the label text sits relative to the line.")
+labelOffset   = input.int(5, "Label Offset (bars)", minval=0, maxval=50, group=grpLabel, tooltip="How far to the right the labels float past the latest bar.")
+labelSize     = input.string("small", "Label Size", options=["tiny", "small", "normal", "large"], group=grpLabel)
+extendRight   = input.bool(true, "Extend Lines to the Right", group=grpLabel)
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+styleFromString(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+lblSize = switch labelSize
+    "tiny"   => size.tiny
+    "small"  => size.small
+    "normal" => size.normal
+    "large"  => size.large
+    => size.small
+
+labelStyle = switch labelPosition
+    "Above Line" => label.style_label_lower_left
+    "Below Line" => label.style_label_upper_left
+    "On Line"    => label.style_label_left
+    => label.style_label_lower_left
+
+// ============================================================================
+// SESSION TRACKING
+// ============================================================================
+inRTH      = not na(time(timeframe.period, rthSession,    "America/New_York"))
+rthStarted = inRTH and not inRTH[1]
+rthEnded   = not inRTH and inRTH[1]
+
+inGX       = not na(time(timeframe.period, globexSession, "America/New_York"))
+gxStarted  = inGX and not inGX[1]
+gxEnded    = not inGX and inGX[1]
+
+// Week change detection
+newWeek = ta.change(weekofyear) != 0
+
+// ============================================================================
+// VP CALCULATION ENGINE
+// ============================================================================
+type ProfileResult
+    float poc
+    float vah
+    float val
+    float hi
+    float lo
+
+calcProfile(array<float> prices, array<float> volumes, int rows, float vaPct) =>
+    ProfileResult res = ProfileResult.new(na, na, na, na, na)
+    int n = array.size(prices)
+    if n > 1
+        float hi = array.max(prices)
+        float lo = array.min(prices)
+        res.hi := hi
+        res.lo := lo
+        if hi > lo
+            float binSize = (hi - lo) / rows
+            array<float> bins = array.new<float>(rows, 0.0)
+            for i = 0 to n - 1
+                float p = array.get(prices, i)
+                float v = array.get(volumes, i)
+                int idx = math.min(rows - 1, math.max(0, int((p - lo) / binSize)))
+                array.set(bins, idx, array.get(bins, idx) + v)
+
+            // POC = bin with max volume
+            int pocIdx = 0
+            float pocVol = 0.0
+            float totalVol = 0.0
+            for i = 0 to rows - 1
+                float bv = array.get(bins, i)
+                totalVol += bv
+                if bv > pocVol
+                    pocVol := bv
+                    pocIdx := i
+            res.poc := lo + (pocIdx + 0.5) * binSize
+
+            // Value area: expand from POC until vaPct of volume captured
+            float target = totalVol * vaPct / 100.0
+            float accum = pocVol
+            int upIdx = pocIdx
+            int dnIdx = pocIdx
+            while accum < target and (upIdx < rows - 1 or dnIdx > 0)
+                float upVol = upIdx < rows - 1 ? array.get(bins, upIdx + 1) : -1.0
+                float dnVol = dnIdx > 0          ? array.get(bins, dnIdx - 1) : -1.0
+                if upVol >= dnVol and upIdx < rows - 1
+                    upIdx += 1
+                    accum += upVol
+                else if dnIdx > 0
+                    dnIdx -= 1
+                    accum += dnVol
+                else
+                    break
+            res.vah := lo + (upIdx + 1) * binSize
+            res.val := lo + dnIdx * binSize
+    res
+
+// ============================================================================
+// DATA ACCUMULATORS
+// ============================================================================
+// RTH Day
+var array<float> dayPrices  = array.new<float>()
+var array<float> dayVolumes = array.new<float>()
+var int dayStartBar = na
+var int dayEndBar   = na
+
+// Globex
+var array<float> gxPrices  = array.new<float>()
+var array<float> gxVolumes = array.new<float>()
+var int gxStartBar = na
+var int gxEndBar   = na
+
+// Week (RTH only)
+var array<float> weekPrices  = array.new<float>()
+var array<float> weekVolumes = array.new<float>()
+var int weekStartBar = na
+
+// ============================================================================
+// STORED PRIOR VALUES
+// ============================================================================
+var float pdVAH = na, var float pdPOC = na, var float pdVAL = na, var float pdHi = na, var float pdLo = na
+var int   pdStartBar = na, var int pdEndBar = na
+
+var float gxVAHv = na, var float gxPOCv = na, var float gxVALv = na, var float gxHiv = na, var float gxLov = na
+var int   gxLevelStartBar = na, var int gxLevelEndBar = na
+
+var float pwVAH = na, var float pwPOC = na, var float pwVAL = na, var float pwHi = na, var float pwLo = na
+var int   pwStartBar = na, var int pwEndBar = na
+
+var float devPOC = na, var float devVAH = na, var float devVAL = na
+
+// ============================================================================
+// LINE/LABEL STORAGE
+// ============================================================================
+var array<line>  allLines  = array.new<line>()
+var array<label> allLabels = array.new<label>()
+
+clearAll() =>
+    while array.size(allLines) > 0
+        line.delete(array.shift(allLines))
+    while array.size(allLabels) > 0
+        label.delete(array.shift(allLabels))
+
+drawLevel(float price, int x1, int x2, color col, string styleStr, int width, string txt, bool show) =>
+    if show and not na(price)
+        ln = line.new(x1, price, x2, price, xloc=xloc.bar_index, color=col, style=styleFromString(styleStr), width=width, extend=extendRight ? extend.right : extend.none)
+        array.push(allLines, ln)
+        if showLabels
+            int labelX = x2 + labelOffset
+            string labelText = txt + "  " + str.tostring(price, format.mintick)
+            lbl = label.new(
+                 x         = labelX,
+                 y         = price,
+                 text      = labelText,
+                 xloc      = xloc.bar_index,
+                 yloc      = yloc.price,
+                 color     = color.new(color.black, 100),
+                 textcolor = col,
+                 style     = labelStyle,
+                 size      = lblSize,
+                 textalign = text.align_left)
+            array.push(allLabels, lbl)
+
+// ============================================================================
+// ACCUMULATE BAR DATA
+// ============================================================================
+// RTH Day
+if inRTH
+    if rthStarted
+        array.clear(dayPrices)
+        array.clear(dayVolumes)
+        dayStartBar := bar_index
+    array.push(dayPrices,  hlc3)
+    array.push(dayVolumes, volume)
+    dayEndBar := bar_index
+
+// Globex / Overnight
+if inGX
+    if gxStarted
+        array.clear(gxPrices)
+        array.clear(gxVolumes)
+        gxStartBar := bar_index
+    array.push(gxPrices,  hlc3)
+    array.push(gxVolumes, volume)
+    gxEndBar := bar_index
+
+// Week ΓÇö accumulate during RTH only
+if inRTH
+    if newWeek
+        array.clear(weekPrices)
+        array.clear(weekVolumes)
+        weekStartBar := bar_index
+    array.push(weekPrices,  hlc3)
+    array.push(weekVolumes, volume)
+
+// ============================================================================
+// COMPUTE DEVELOPING VALUES (every bar during active session)
+// ============================================================================
+
+// Developing RTH (live during RTH)
+if inRTH and array.size(dayPrices) > 5
+    devRes = calcProfile(dayPrices, dayVolumes, vpRows, valueAreaPct)
+    devPOC := devRes.poc
+    devVAH := devRes.vah
+    devVAL := devRes.val
+
+// Developing Globex (live during overnight session) ΓÇö overwrites stored values as session builds
+if inGX and array.size(gxPrices) > 5
+    gxRes = calcProfile(gxPrices, gxVolumes, vpRows, valueAreaPct)
+    gxPOCv := gxRes.poc
+    gxVAHv := gxRes.vah
+    gxVALv := gxRes.val
+    gxHiv  := gxRes.hi
+    gxLov  := gxRes.lo
+    gxLevelStartBar := gxStartBar
+    gxLevelEndBar   := bar_index
+
+// Clear stored Globex values at the moment Globex opens (18:00 ET) so old levels don't linger
+if gxStarted
+    gxPOCv := na
+    gxVAHv := na
+    gxVALv := na
+    gxHiv  := na
+    gxLov  := na
+
+
+
+// Note: Globex levels finalize naturally at gxEnded (09:30 ET) ΓÇö the last "developing"
+// calculation on the bar before close becomes the locked final value, and stays until
+// the next gxStarted event (18:00 ET) clears them and a new session begins.
+
+
+// ============================================================================
+// FINALIZE PRIOR DAY at RTH session end
+// ============================================================================
+if rthEnded and array.size(dayPrices) > 5
+    pdRes = calcProfile(dayPrices, dayVolumes, vpRows, valueAreaPct)
+    pdPOC := pdRes.poc
+    pdVAH := pdRes.vah
+    pdVAL := pdRes.val
+    pdHi  := pdRes.hi
+    pdLo  := pdRes.lo
+    pdStartBar := dayStartBar
+    pdEndBar   := bar_index
+
+// ============================================================================
+// FINALIZE GLOBEX at Globex session end (which is RTH open)
+// ============================================================================
+if gxEnded and array.size(gxPrices) > 5
+    gxRes = calcProfile(gxPrices, gxVolumes, vpRows, valueAreaPct)
+    gxPOCv := gxRes.poc
+    gxVAHv := gxRes.vah
+    gxVALv := gxRes.val
+    gxHiv  := gxRes.hi
+    gxLov  := gxRes.lo
+    gxLevelStartBar := gxStartBar
+    gxLevelEndBar   := bar_index
+
+// ============================================================================
+// FINALIZE PRIOR WEEK at week change
+// ============================================================================
+if newWeek and array.size(weekPrices) > 5
+    pwRes = calcProfile(weekPrices, weekVolumes, vpRows, valueAreaPct)
+    pwPOC := pwRes.poc
+    pwVAH := pwRes.vah
+    pwVAL := pwRes.val
+    pwHi  := pwRes.hi
+    pwLo  := pwRes.lo
+    pwStartBar := weekStartBar
+    pwEndBar   := bar_index - 1
+
+// ============================================================================
+// REDRAW LINES on every bar update (using last bar as anchor)
+// ============================================================================
+if barstate.islast
+    clearAll()
+
+    int rightAnchor  = bar_index
+    int pdLeftAnchor = na(pdEndBar)        ? bar_index - 100 : pdEndBar
+    int gxLeftAnchor = na(gxLevelEndBar)   ? bar_index - 100 : gxLevelEndBar
+    int pwLeftAnchor = na(pwEndBar)        ? bar_index - 500 : pwEndBar
+
+    // ---- Prior Day Levels ----
+    drawLevel(pdVAH, pdLeftAnchor, rightAnchor, pdVAHColor, pdVAHStyle, pdVAHWidth, "PD VAH", showPDVAH)
+    drawLevel(pdPOC, pdLeftAnchor, rightAnchor, pdPOCColor, pdPOCStyle, pdPOCWidth, "PD POC", showPDPOC)
+    drawLevel(pdVAL, pdLeftAnchor, rightAnchor, pdVALColor, pdVALStyle, pdVALWidth, "PD VAL", showPDVAL)
+    drawLevel(pdHi,  pdLeftAnchor, rightAnchor, pdhColor,   pdhStyle,   pdhWidth,   "PDH",    showPDH)
+    drawLevel(pdLo,  pdLeftAnchor, rightAnchor, pdlColor,   pdlStyle,   pdlWidth,   "PDL",    showPDL)
+    if showPDMID and not na(pdHi) and not na(pdLo)
+        drawLevel((pdHi + pdLo) / 2, pdLeftAnchor, rightAnchor, pdMidColor, pdMidStyle, pdMidWidth, "PD MID", true)
+
+    // ---- Globex / Overnight Levels ----
+    drawLevel(gxVAHv, gxLeftAnchor, rightAnchor, gxVAHColor, gxVAHStyle, gxVAHWidth, "GX VAH", showGXVAH)
+    drawLevel(gxPOCv, gxLeftAnchor, rightAnchor, gxPOCColor, gxPOCStyle, gxPOCWidth, "GX POC", showGXPOC)
+    drawLevel(gxVALv, gxLeftAnchor, rightAnchor, gxVALColor, gxVALStyle, gxVALWidth, "GX VAL", showGXVAL)
+    drawLevel(gxHiv,  gxLeftAnchor, rightAnchor, gxhColor,   gxhStyle,   gxhWidth,   "ONH",    showGXH)
+    drawLevel(gxLov,  gxLeftAnchor, rightAnchor, gxlColor,   gxlStyle,   gxlWidth,   "ONL",    showGXL)
+    if showGXMID and not na(gxHiv) and not na(gxLov)
+        drawLevel((gxHiv + gxLov) / 2, gxLeftAnchor, rightAnchor, gxMidColor, gxMidStyle, gxMidWidth, "GX MID", true)
+
+    // ---- Prior Week Levels ----
+    drawLevel(pwVAH, pwLeftAnchor, rightAnchor, pwVAHColor, pwVAHStyle, pwVAHWidth, "PW VAH", showPWVAH)
+    drawLevel(pwPOC, pwLeftAnchor, rightAnchor, pwPOCColor, pwPOCStyle, pwPOCWidth, "PW POC", showPWPOC)
+    drawLevel(pwVAL, pwLeftAnchor, rightAnchor, pwVALColor, pwVALStyle, pwVALWidth, "PW VAL", showPWVAL)
+    drawLevel(pwHi,  pwLeftAnchor, rightAnchor, pwhColor,   pwhStyle,   pwhWidth,   "PWH",    showPWH)
+    drawLevel(pwLo,  pwLeftAnchor, rightAnchor, pwlColor,   pwlStyle,   pwlWidth,   "PWL",    showPWL)
+
+    // ---- Developing (current) RTH Levels ----
+    if inRTH
+        int devLeft = na(dayStartBar) ? bar_index - 50 : dayStartBar
+        drawLevel(devPOC, devLeft, rightAnchor, devPOCColor, devPOCStyle, devPOCWidth, "D POC", showDevPOC)
+        drawLevel(devVAH, devLeft, rightAnchor, devVAHColor, devVAHStyle, devVAHWidth, "D VAH", showDevVAH)
+        drawLevel(devVAL, devLeft, rightAnchor, devVALColor, devVALStyle, devVALWidth, "D VAL", showDevVAL)

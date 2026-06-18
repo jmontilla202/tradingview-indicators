@@ -1,0 +1,186 @@
+//@version=6
+indicator("Trend Classifier", overlay=true)
+
+// ============================================================================
+// INPUT SETTINGS
+// ============================================================================
+tablePosition = input.string("Top Right", "Table Position",
+     options=["Top Left", "Top Center", "Top Right",
+              "Middle Left", "Middle Center", "Middle Right",
+              "Bottom Left", "Bottom Center", "Bottom Right"])
+fontSize = input.string("Normal", "Font Size",
+     options=["Auto", "Tiny", "Small", "Normal", "Large", "Huge"])
+
+// Trend detection parameters
+lengthMA = input.int(20, "MA Length for Trend", minval=1)
+lengthRSI = input.int(14, "RSI Length", minval=1)
+rangeThreshold = input.float(1.5, "Range Threshold (ATR multiplier)", minval=0.1, step=0.1)
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+getTablePosition(pos) =>
+    switch pos
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Top Right" => position.top_right
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right" => position.bottom_right
+        => position.top_right
+
+getFontSize(size) =>
+    switch size
+        "Auto" => size.auto
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Normal" => size.normal
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.normal
+
+// ============================================================================
+// TREND CLASSIFICATION LOGIC
+// ============================================================================
+classifyTrend() =>
+    // Calculate indicators
+    ma = ta.sma(close, lengthMA)
+    rsi = ta.rsi(close, lengthRSI)
+    atr = ta.atr(14)
+
+    // Price position relative to MA
+    aboveMA = close > ma
+    belowMA = close < ma
+
+    // Slope of MA
+    maSlope = ma - ma[5]
+    maSlopeUp = maSlope > 0
+    maSlopeDown = maSlope < 0
+
+    // RSI conditions
+    rsiOverbought = rsi > 60
+    rsiOversold = rsi < 40
+    rsiNeutral = rsi >= 40 and rsi <= 60
+
+    // Range detection using ATR
+    highLow = high - low
+    isRanging = highLow < (atr * rangeThreshold) and rsiNeutral and math.abs(maSlope) < (atr * 0.1)
+
+    // Trend classification
+    trend = "Unknown"
+    trendColor = color.gray
+
+    if isRanging
+        trend := "Ranging"
+        trendColor := color.orange
+    else if aboveMA and maSlopeUp and rsiOverbought
+        trend := "Bullish"
+        trendColor := color.green
+    else if aboveMA and maSlopeUp
+        trend := "Bullish"
+        trendColor := color.green
+    else if belowMA and maSlopeDown and rsiOversold
+        trend := "Bearish"
+        trendColor := color.red
+    else if belowMA and maSlopeDown
+        trend := "Bearish"
+        trendColor := color.red
+    else if aboveMA and not maSlopeDown
+        trend := "Bullish"
+        trendColor := color.green
+    else if belowMA and not maSlopeUp
+        trend := "Bearish"
+        trendColor := color.red
+
+    [trend, trendColor]
+
+// ============================================================================
+// MULTI-TIMEFRAME ANALYSIS
+// ============================================================================
+// HTF Analysis
+[trend1W, color1W] = request.security(syminfo.tickerid, "W", classifyTrend())
+[trend1D, color1D] = request.security(syminfo.tickerid, "D", classifyTrend())
+[trend4H, color4H] = request.security(syminfo.tickerid, "240", classifyTrend())
+[trend1H, color1H] = request.security(syminfo.tickerid, "60", classifyTrend())
+
+// LTF Analysis
+[trend30M, color30M] = request.security(syminfo.tickerid, "30", classifyTrend())
+[trend15M, color15M] = request.security(syminfo.tickerid, "15", classifyTrend())
+[trend5M, color5M] = request.security(syminfo.tickerid, "5", classifyTrend())
+[trend1M, color1M] = request.security(syminfo.tickerid, "1", classifyTrend())
+
+// ============================================================================
+// TABLE DISPLAY
+// ============================================================================
+// Updated table with 11 rows (0-10) to accommodate all data
+var table trendTable = table.new(getTablePosition(tablePosition), 3, 11,
+     border_width=2, border_color=color.gray, frame_width=1, frame_color=color.gray)
+
+if barstate.islast
+    // Header (Row 0)
+    table.cell(trendTable, 0, 0, "Timeframe",
+         bgcolor=color.new(color.blue, 70), text_color=color.white,
+         text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 1, 0, "Trend",
+         bgcolor=color.new(color.blue, 70), text_color=color.white,
+         text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 0, "Status",
+         bgcolor=color.new(color.blue, 70), text_color=color.white,
+         text_size=getFontSize(fontSize), text_halign=text.align_center)
+
+    // HTF Separator (Row 1)
+    table.cell(trendTable, 0, 1, "HTF Analysis",
+         bgcolor=color.new(color.gray, 80), text_color=color.white,
+         text_size=getFontSize(fontSize), text_halign=text.align_left)
+    table.merge_cells(trendTable, 0, 1, 2, 1)
+
+    // HTF Data (Rows 2-5)
+    table.cell(trendTable, 0, 2, "Weekly", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 2, trend1W, bgcolor=color.new(color1W, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 2, "●", text_color=color1W, text_size=getFontSize(fontSize))
+
+    table.cell(trendTable, 0, 3, "Daily", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 3, trend1D, bgcolor=color.new(color1D, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 3, "●", text_color=color1D, text_size=getFontSize(fontSize))
+
+    table.cell(trendTable, 0, 4, "4 Hour", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 4, trend4H, bgcolor=color.new(color4H, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 4, "●", text_color=color4H, text_size=getFontSize(fontSize))
+
+    table.cell(trendTable, 0, 5, "1 Hour", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 5, trend1H, bgcolor=color.new(color1H, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 5, "●", text_color=color1H, text_size=getFontSize(fontSize))
+
+    // LTF Separator (Row 6)
+    table.cell(trendTable, 0, 6, "LTF Analysis",
+         bgcolor=color.new(color.gray, 80), text_color=color.white,
+         text_size=getFontSize(fontSize), text_halign=text.align_left)
+    table.merge_cells(trendTable, 0, 6, 2, 6)
+
+    // LTF Data (Rows 7-10)
+    table.cell(trendTable, 0, 7, "30 Min", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 7, trend30M, bgcolor=color.new(color30M, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 7, "●", text_color=color30M, text_size=getFontSize(fontSize))
+
+    table.cell(trendTable, 0, 8, "15 Min", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 8, trend15M, bgcolor=color.new(color15M, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 8, "●", text_color=color15M, text_size=getFontSize(fontSize))
+
+    table.cell(trendTable, 0, 9, "5 Min", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 9, trend5M, bgcolor=color.new(color5M, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 9, "●", text_color=color5M, text_size=getFontSize(fontSize))
+
+    table.cell(trendTable, 0, 10, "1 Min", text_size=getFontSize(fontSize))
+    table.cell(trendTable, 1, 10, trend1M, bgcolor=color.new(color1M, 80),
+         text_color=color.white, text_size=getFontSize(fontSize), text_halign=text.align_center)
+    table.cell(trendTable, 2, 10, "●", text_color=color1M, text_size=getFontSize(fontSize))
