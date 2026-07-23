@@ -1,0 +1,1102 @@
+
+//@version=6
+indicator(
+     "ES Context Filter v0.1",
+     shorttitle = "ES Context",
+     overlay = true,
+     max_labels_count = 50
+)
+
+//=============================================================================
+// PURPOSE
+//-----------------------------------------------------------------------------
+// This indicator summarizes market context. It does not provide entry signals.
+//
+// Workflow:
+// 1. Use the dashboard to identify regime and location.
+// 2. Manually verify an Al Brooks-style second entry.
+// 3. Check CVD and cross-market breadth separately.
+// 4. Confirm structural stop and sufficient room to target.
+//=============================================================================
+
+
+//=============================================================================
+// INPUT GROUPS
+//=============================================================================
+
+string GROUP_SESSION = "1. Session"
+string GROUP_REGIME  = "2. Regime Classification"
+string GROUP_LEVELS  = "3. Previous Volume Profile"
+string GROUP_LOCATION = "4. Location"
+string GROUP_DISPLAY = "5. Display"
+string GROUP_ALERTS  = "6. Alerts"
+
+
+//=============================================================================
+// SESSION INPUTS
+//=============================================================================
+
+string exchangeTimezone = input.string(
+     "America/New_York",
+     "Time Zone",
+     group = GROUP_SESSION
+)
+
+string rthSession = input.session(
+     "0930-1600",
+     "RTH Session",
+     group = GROUP_SESSION
+)
+
+string initialBalanceSession = input.session(
+     "0930-1030",
+     "Initial Balance",
+     group = GROUP_SESSION
+)
+
+string observationSession = input.session(
+     "1000-1030",
+     "Observation Window",
+     group = GROUP_SESSION
+)
+
+string executionSession = input.session(
+     "1030-1130",
+     "Execution Window",
+     group = GROUP_SESSION
+)
+
+
+//=============================================================================
+// REGIME INPUTS
+//=============================================================================
+
+int emaLength = input.int(
+     21,
+     "EMA Length",
+     minval = 1,
+     group = GROUP_REGIME
+)
+
+int ema8Length = input.int(
+     8,
+     "EMA 8 Length",
+     minval = 1,
+     group = GROUP_REGIME
+)
+
+int atrLength = input.int(
+     14,
+     "ATR Length",
+     minval = 1,
+     group = GROUP_REGIME
+)
+
+int slopeLookback = input.int(
+     5,
+     "EMA Slope Lookback",
+     minval = 1,
+     maxval = 20,
+     group = GROUP_REGIME,
+     tooltip = "Number of bars used to determine whether the EMA is rising, falling, or flat."
+)
+
+float trendSlopeThreshold = input.float(
+     0.12,
+     "Trend Slope Threshold",
+     minval = 0.01,
+     maxval = 1.00,
+     step = 0.01,
+     group = GROUP_REGIME,
+     tooltip = "EMA change over the lookback divided by ATR. Higher values require a stronger trend."
+)
+
+float flatSlopeThreshold = input.float(
+     0.06,
+     "Flat EMA Threshold",
+     minval = 0.00,
+     maxval = 0.50,
+     step = 0.01,
+     group = GROUP_REGIME,
+     tooltip = "EMA slope below this threshold is considered flat."
+)
+
+int holdLookback = input.int(
+     5,
+     "EMA Hold Lookback",
+     minval = 2,
+     maxval = 20,
+     group = GROUP_REGIME
+)
+
+float requiredHoldPercent = input.float(
+     0.70,
+     "Required EMA Hold Percentage",
+     minval = 0.50,
+     maxval = 1.00,
+     step = 0.05,
+     group = GROUP_REGIME,
+     tooltip = "Percentage of recent closes that should remain on the trend side of the EMA."
+)
+
+float rangeVWAPDistanceATR = input.float(
+     0.60,
+     "Range: Maximum Distance From VWAP",
+     minval = 0.10,
+     maxval = 2.00,
+     step = 0.05,
+     group = GROUP_REGIME,
+     tooltip = "Price must be within this ATR multiple of VWAP to qualify as a balanced range."
+)
+
+int acceptanceBars = input.int(
+     2,
+     "Acceptance Closes",
+     minval = 1,
+     maxval = 5,
+     group = GROUP_REGIME,
+     tooltip = "Number of consecutive closes beyond a level used as a simple acceptance test."
+)
+
+
+//=============================================================================
+// MANUAL PREVIOUS VOLUME PROFILE INPUTS
+//-----------------------------------------------------------------------------
+// Enter 0 to disable an individual level.
+//=============================================================================
+
+float manualVAH = input.float(
+     0.0,
+     "Previous VAH",
+     minval = 0.0,
+     step = 0.25,
+     group = GROUP_LEVELS
+)
+
+float manualPOC = input.float(
+     0.0,
+     "Previous POC",
+     minval = 0.0,
+     step = 0.25,
+     group = GROUP_LEVELS
+)
+
+float manualVAL = input.float(
+     0.0,
+     "Previous VAL",
+     minval = 0.0,
+     step = 0.25,
+     group = GROUP_LEVELS
+)
+
+
+//=============================================================================
+// LOCATION INPUTS
+//=============================================================================
+
+float locationProximityATR = input.float(
+     0.20,
+     "Level Proximity",
+     minval = 0.05,
+     maxval = 1.00,
+     step = 0.05,
+     group = GROUP_LOCATION,
+     tooltip = "Price is considered near a level when within this ATR multiple."
+)
+
+
+//=============================================================================
+// DISPLAY INPUTS
+//=============================================================================
+
+bool showEMA = input.bool(
+     true,
+     "Show 21 EMA",
+     group = GROUP_DISPLAY
+)
+
+bool showEMA8 = input.bool(
+     true,
+     "Show 8 EMA",
+     group = GROUP_DISPLAY
+)
+
+bool showVWAP = input.bool(
+     true,
+     "Show RTH VWAP",
+     group = GROUP_DISPLAY
+)
+
+bool showInitialBalance = input.bool(
+     true,
+     "Show IB High/Low",
+     group = GROUP_DISPLAY
+)
+
+bool showProfileLevels = input.bool(
+     true,
+     "Show Manual VAH/POC/VAL",
+     group = GROUP_DISPLAY
+)
+
+bool showContextDots = input.bool(
+     false,
+     "Show Context-Change Dots",
+     group = GROUP_DISPLAY,
+     tooltip = "Dots indicate that context became actionable. They are not entry signals."
+)
+
+string dashboardPosition = input.string(
+     "Top Right",
+     "Dashboard Position",
+     options = ["Top Right", "Top Left", "Bottom Right", "Bottom Left"],
+     group = GROUP_DISPLAY
+)
+
+string dashboardFontSize = input.string(
+     "Small",
+     "Dashboard Font Size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"],
+     group = GROUP_DISPLAY
+)
+
+
+
+//=============================================================================
+// ALERT INPUTS
+//=============================================================================
+
+bool enableContextAlerts = input.bool(
+     true,
+     "Enable Context Alerts",
+     group = GROUP_ALERTS
+)
+
+
+//=============================================================================
+// SESSION CALCULATIONS
+//=============================================================================
+
+bool inRTH = not na(time(timeframe.period, rthSession, exchangeTimezone))
+bool inInitialBalance = not na(time(timeframe.period, initialBalanceSession, exchangeTimezone))
+bool inObservation = not na(time(timeframe.period, observationSession, exchangeTimezone))
+bool inExecution = not na(time(timeframe.period, executionSession, exchangeTimezone))
+
+bool rthStart = inRTH and not inRTH[1]
+
+bool supportedTimeframe =
+     timeframe.isintraday and timeframe.in_seconds() <= 300
+
+
+//=============================================================================
+// CORE SERIES
+//=============================================================================
+
+float ema21 = ta.ema(close, emaLength)
+float ema8 = ta.ema(close, ema8Length)
+float atr = ta.atr(atrLength)
+
+// RTH-anchored VWAP.
+float rthVWAP = ta.vwap(hlc3, rthStart)
+
+
+//=============================================================================
+// INITIAL BALANCE
+//=============================================================================
+
+var float ibHigh = na
+var float ibLow = na
+
+if rthStart
+    ibHigh := na
+    ibLow := na
+
+if inInitialBalance
+    ibHigh := na(ibHigh) ? high : math.max(ibHigh, high)
+    ibLow := na(ibLow) ? low : math.min(ibLow, low)
+
+bool ibReady =
+     inRTH and
+     not inInitialBalance and
+     not na(ibHigh) and
+     not na(ibLow)
+
+float ibMidpoint =
+     ibReady ? (ibHigh + ibLow) / 2.0 : na
+
+
+//=============================================================================
+// MANUAL PROFILE LEVELS
+//=============================================================================
+
+float previousVAH = manualVAH > 0.0 ? manualVAH : na
+float previousPOC = manualPOC > 0.0 ? manualPOC : na
+float previousVAL = manualVAL > 0.0 ? manualVAL : na
+
+bool profileValid =
+     not na(previousVAH) and
+     not na(previousVAL) and
+     previousVAH > previousVAL
+
+
+//=============================================================================
+// HELPER FUNCTIONS
+//=============================================================================
+
+f_nearLevel(float level) =>
+    not na(level) and
+     not na(atr) and
+     atr > 0 and
+     math.abs(close - level) <= atr * locationProximityATR
+
+f_allClosesAbove(float level, int numberOfBars) =>
+    bool result = not na(level)
+    for i = 0 to numberOfBars - 1
+        result := result and close[i] > level
+    result
+
+f_allClosesBelow(float level, int numberOfBars) =>
+    bool result = not na(level)
+    for i = 0 to numberOfBars - 1
+        result := result and close[i] < level
+    result
+
+f_addLocation(string currentText, string newText) =>
+    currentText == "" ? newText : currentText + " + " + newText
+
+
+//=============================================================================
+// EMA HOLD AND SLOPE
+//=============================================================================
+
+float closesAboveEMA = 0.0
+float closesBelowEMA = 0.0
+
+for i = 0 to holdLookback - 1
+    closesAboveEMA += close[i] > ema21[i] ? 1.0 : 0.0
+    closesBelowEMA += close[i] < ema21[i] ? 1.0 : 0.0
+
+float aboveEMAPercent = closesAboveEMA / holdLookback
+float belowEMAPercent = closesBelowEMA / holdLookback
+
+float normalizedEMASlope =
+     not na(ema21[slopeLookback]) and atr > 0
+     ? (ema21 - ema21[slopeLookback]) / atr
+     : 0.0
+
+bool emaRising =
+     normalizedEMASlope >= trendSlopeThreshold
+
+bool emaFalling =
+     normalizedEMASlope <= -trendSlopeThreshold
+
+bool emaFlat =
+     math.abs(normalizedEMASlope) <= flatSlopeThreshold
+
+bool holdingAboveEMA =
+     aboveEMAPercent >= requiredHoldPercent
+
+bool holdingBelowEMA =
+     belowEMAPercent >= requiredHoldPercent
+
+
+// --- 8 EMA ---
+
+float closesAboveEMA8 = 0.0
+float closesBelowEMA8 = 0.0
+
+for i = 0 to holdLookback - 1
+    closesAboveEMA8 += close[i] > ema8[i] ? 1.0 : 0.0
+    closesBelowEMA8 += close[i] < ema8[i] ? 1.0 : 0.0
+
+float aboveEMA8Percent = closesAboveEMA8 / holdLookback
+float belowEMA8Percent = closesBelowEMA8 / holdLookback
+
+float normalizedEMASlope8 =
+     not na(ema8[slopeLookback]) and atr > 0
+     ? (ema8 - ema8[slopeLookback]) / atr
+     : 0.0
+
+bool ema8Rising =
+     normalizedEMASlope8 >= trendSlopeThreshold
+
+bool ema8Falling =
+     normalizedEMASlope8 <= -trendSlopeThreshold
+
+bool ema8Flat =
+     math.abs(normalizedEMASlope8) <= flatSlopeThreshold
+
+bool holdingAboveEMA8 =
+     aboveEMA8Percent >= requiredHoldPercent
+
+bool holdingBelowEMA8 =
+     belowEMA8Percent >= requiredHoldPercent
+
+//=============================================================================
+// LOCATION STATES
+//=============================================================================
+
+bool nearEMA = f_nearLevel(ema21)
+bool nearEMA8 = f_nearLevel(ema8)
+bool nearVWAP = inRTH and f_nearLevel(rthVWAP)
+
+bool nearIBHigh = ibReady and f_nearLevel(ibHigh)
+bool nearIBLow = ibReady and f_nearLevel(ibLow)
+bool nearIBMidpoint = ibReady and f_nearLevel(ibMidpoint)
+
+bool nearVAH = f_nearLevel(previousVAH)
+bool nearPOC = f_nearLevel(previousPOC)
+bool nearVAL = f_nearLevel(previousVAL)
+
+bool insideIB =
+     ibReady and
+     close <= ibHigh and
+     close >= ibLow
+
+bool insidePreviousValue =
+     profileValid and
+     close <= previousVAH and
+     close >= previousVAL
+
+bool nearRangeUpperEdge =
+     nearIBHigh or nearVAH
+
+bool nearRangeLowerEdge =
+     nearIBLow or nearVAL
+
+bool nearMiddle =
+     nearPOC or nearIBMidpoint
+
+
+//=============================================================================
+// ACCEPTANCE TESTS
+//-----------------------------------------------------------------------------
+// These are intentionally simple. They are context clues, not trade signals.
+//=============================================================================
+
+bool acceptedAboveIB =
+     ibReady and
+     f_allClosesAbove(ibHigh, acceptanceBars)
+
+bool acceptedBelowIB =
+     ibReady and
+     f_allClosesBelow(ibLow, acceptanceBars)
+
+bool acceptedAboveValue =
+     profileValid and
+     f_allClosesAbove(previousVAH, acceptanceBars)
+
+bool acceptedBelowValue =
+     profileValid and
+     f_allClosesBelow(previousVAL, acceptanceBars)
+
+bool acceptedAboveUpperEdge =
+     (nearIBHigh and acceptedAboveIB) or
+     (nearVAH and acceptedAboveValue)
+
+bool acceptedBelowLowerEdge =
+     (nearIBLow and acceptedBelowIB) or
+     (nearVAL and acceptedBelowValue)
+
+
+//=============================================================================
+// REGIME CLASSIFICATION
+//=============================================================================
+
+bool priceAboveVWAP =
+     inRTH and close > rthVWAP
+
+bool priceBelowVWAP =
+     inRTH and close < rthVWAP
+
+bool nearVWAPForRange =
+     inRTH and
+     atr > 0 and
+     math.abs(close - rthVWAP) <= atr * rangeVWAPDistanceATR
+
+bool bullTrend =
+     inRTH and
+     priceAboveVWAP and
+     close > ema21 and
+     emaRising and
+     holdingAboveEMA
+
+bool bearTrend =
+     inRTH and
+     priceBelowVWAP and
+     close < ema21 and
+     emaFalling and
+     holdingBelowEMA
+
+bool balancedRange =
+     inRTH and
+     not bullTrend and
+     not bearTrend and
+     emaFlat and
+     nearVWAPForRange and
+     (insideIB or insidePreviousValue)
+
+bool unclearRegime =
+     inRTH and
+     not bullTrend and
+     not bearTrend and
+     not balancedRange
+
+
+//=============================================================================
+// PROFILE STATE
+//=============================================================================
+
+string profileState = "LEVELS OFF"
+
+if profileValid
+    if nearVAH
+        profileState := "AT VAH"
+    else if nearVAL
+        profileState := "AT VAL"
+    else if nearPOC
+        profileState := "AT POC / MIDDLE"
+    else if close > previousVAH
+        profileState := "ABOVE VALUE"
+    else if close < previousVAL
+        profileState := "BELOW VALUE"
+    else
+        profileState := "INSIDE VALUE"
+
+
+//=============================================================================
+// LOCATION DESCRIPTION
+//=============================================================================
+
+string locationText = ""
+
+if nearEMA
+    locationText := f_addLocation(locationText, "21 EMA")
+
+if nearEMA8
+    locationText := f_addLocation(locationText, "8 EMA")
+
+if nearVWAP
+    locationText := f_addLocation(locationText, "VWAP")
+
+if nearIBHigh
+    locationText := f_addLocation(locationText, "IBH")
+
+if nearIBLow
+    locationText := f_addLocation(locationText, "IBL")
+
+if nearVAH
+    locationText := f_addLocation(locationText, "VAH")
+
+if nearVAL
+    locationText := f_addLocation(locationText, "VAL")
+
+if nearPOC
+    locationText := f_addLocation(locationText, "POC")
+
+if locationText == ""
+    locationText := "NO KEY LOCATION"
+
+
+//=============================================================================
+// SESSION STATE
+//=============================================================================
+
+string sessionState = "CLOSED"
+
+if inExecution
+    sessionState := "ACTIVE"
+else if inObservation
+    sessionState := "OBSERVE"
+else if inInitialBalance
+    sessionState := "IB FORMING"
+else if inRTH
+    sessionState := "CLOSED"
+
+
+//=============================================================================
+// REGIME TEXT
+//=============================================================================
+
+string regimeText = "OUTSIDE RTH"
+
+if bullTrend
+    regimeText := "BULL TREND"
+else if bearTrend
+    regimeText := "BEAR TREND"
+else if balancedRange
+    regimeText := "RANGE"
+else if unclearRegime
+    regimeText := "UNCLEAR"
+
+
+//=============================================================================
+// TRADE-PLAN CONTEXT
+//-----------------------------------------------------------------------------
+// These conditions permit looking for a manual second-entry trigger.
+// They do not constitute an entry.
+//=============================================================================
+
+bool validBullPullbackLocation =
+     nearEMA or
+     nearEMA8 or
+     nearVWAP or
+     nearIBHigh or
+     nearVAH
+
+bool validBearPullbackLocation =
+     nearEMA or
+     nearEMA8 or
+     nearVWAP or
+     nearIBLow or
+     nearVAL
+
+
+bool bullContextReady = false
+bool bearContextReady = false
+bool rangeLowContextReady = false
+bool rangeHighContextReady = false
+
+string planText = "WAIT"
+string statusText = "NO ACTIONABLE CONTEXT"
+
+if not supportedTimeframe
+    planText := "WAIT"
+    statusText := "USE A 1–5 MIN CHART"
+
+else if not inExecution
+    planText := "WAIT"
+
+    if inObservation or inInitialBalance
+        statusText := "OBSERVE AND PLAN"
+    else
+        statusText := "EXECUTION WINDOW CLOSED"
+
+else if bullTrend
+    if nearPOC
+        planText := "WAIT"
+        statusText := "POC / MIDDLE CONFLICT"
+    else if validBullPullbackLocation
+        planText := "2EL ONLY"
+        statusText := "WATCH FOR MANUAL TRIGGER"
+        bullContextReady := true
+    else
+        planText := "LONG BIAS"
+        statusText := "WAIT FOR PULLBACK"
+
+else if bearTrend
+    if nearPOC
+        planText := "WAIT"
+        statusText := "POC / MIDDLE CONFLICT"
+    else if validBearPullbackLocation
+        planText := "2ES ONLY"
+        statusText := "WATCH FOR MANUAL TRIGGER"
+        bearContextReady := true
+    else
+        planText := "SHORT BIAS"
+        statusText := "WAIT FOR PULLBACK"
+
+else if balancedRange
+    if nearRangeLowerEdge and nearRangeUpperEdge
+        planText := "WAIT"
+        statusText := "RANGE TOO COMPRESSED"
+
+    else if nearRangeLowerEdge
+        if acceptedBelowLowerEdge
+            planText := "WAIT"
+            statusText := "DOWNSIDE ACCEPTANCE"
+        else
+            planText := "FADE RANGE LOW"
+            statusText := "WAIT FOR FAILED BREAK + 2EL"
+            rangeLowContextReady := true
+
+    else if nearRangeUpperEdge
+        if acceptedAboveUpperEdge
+            planText := "WAIT"
+            statusText := "UPSIDE ACCEPTANCE"
+        else
+            planText := "FADE RANGE HIGH"
+            statusText := "WAIT FOR FAILED BREAK + 2ES"
+            rangeHighContextReady := true
+
+    else if nearMiddle or nearVWAP
+        planText := "WAIT"
+        statusText := "MIDDLE OF RANGE"
+
+    else
+        planText := "WAIT"
+        statusText := "WAIT FOR RANGE EDGE"
+
+else
+    planText := "WAIT"
+    statusText := "REGIME UNCLEAR"
+
+
+//=============================================================================
+// CHART PLOTS
+//=============================================================================
+
+plot(
+     showEMA ? ema21 : na,
+     title = "21 EMA",
+     color = color.new(color.yellow, 0),
+     linewidth = 2
+)
+
+plot(
+     showEMA8 ? ema8 : na,
+     title = "8 EMA",
+     color = color.new(color.orange, 0),
+     linewidth = 2
+)
+
+plot(
+     showVWAP and inRTH ? rthVWAP : na,
+     title = "RTH VWAP",
+     color = color.new(color.aqua, 0),
+     linewidth = 2
+)
+
+plot(
+     showInitialBalance and ibReady ? ibHigh : na,
+     title = "IB High",
+     color = color.new(color.blue, 15),
+     linewidth = 1,
+     style = plot.style_linebr
+)
+
+plot(
+     showInitialBalance and ibReady ? ibLow : na,
+     title = "IB Low",
+     color = color.new(color.blue, 15),
+     linewidth = 1,
+     style = plot.style_linebr
+)
+
+plot(
+     showProfileLevels and inRTH ? previousVAH : na,
+     title = "Previous VAH",
+     color = color.new(color.purple, 25),
+     linewidth = 1,
+     style = plot.style_linebr
+)
+
+plot(
+     showProfileLevels and inRTH ? previousPOC : na,
+     title = "Previous POC",
+     color = color.new(color.gray, 35),
+     linewidth = 1,
+     style = plot.style_linebr
+)
+
+plot(
+     showProfileLevels and inRTH ? previousVAL : na,
+     title = "Previous VAL",
+     color = color.new(color.purple, 25),
+     linewidth = 1,
+     style = plot.style_linebr
+)
+
+
+//=============================================================================
+// OPTIONAL CONTEXT-CHANGE DOTS
+//-----------------------------------------------------------------------------
+// Dots mean "evaluate the setup," not "enter now."
+//=============================================================================
+
+bool newBullContext =
+     bullContextReady and not bullContextReady[1]
+
+bool newBearContext =
+     bearContextReady and not bearContextReady[1]
+
+bool newRangeLowContext =
+     rangeLowContextReady and not rangeLowContextReady[1]
+
+bool newRangeHighContext =
+     rangeHighContextReady and not rangeHighContextReady[1]
+
+plotshape(
+     showContextDots and newBullContext,
+     title = "Bull Context Ready",
+     style = shape.circle,
+     location = location.belowbar,
+     color = color.new(color.lime, 0),
+     size = size.tiny
+)
+
+plotshape(
+     showContextDots and newBearContext,
+     title = "Bear Context Ready",
+     style = shape.circle,
+     location = location.abovebar,
+     color = color.new(color.red, 0),
+     size = size.tiny
+)
+
+plotshape(
+     showContextDots and newRangeLowContext,
+     title = "Range Low Context",
+     style = shape.circle,
+     location = location.belowbar,
+     color = color.new(color.blue, 0),
+     size = size.tiny
+)
+
+plotshape(
+     showContextDots and newRangeHighContext,
+     title = "Range High Context",
+     style = shape.circle,
+     location = location.abovebar,
+     color = color.new(color.blue, 0),
+     size = size.tiny
+)
+
+
+//=============================================================================
+// DASHBOARD COLORS
+//=============================================================================
+
+color neutralColor = color.rgb(70, 70, 70)
+color bullColor = color.rgb(25, 110, 65)
+color bearColor = color.rgb(145, 45, 45)
+color rangeColor = color.rgb(40, 85, 145)
+color warningColor = color.rgb(155, 105, 25)
+color textColor = color.white
+color labelColor = color.rgb(35, 35, 35)
+
+color sessionColor =
+     inExecution ? bullColor :
+     inObservation or inInitialBalance ? rangeColor :
+     neutralColor
+
+color regimeColor =
+     bullTrend ? bullColor :
+     bearTrend ? bearColor :
+     balancedRange ? rangeColor :
+     neutralColor
+
+color profileColor =
+     profileState == "ABOVE VALUE" ? bullColor :
+     profileState == "BELOW VALUE" ? bearColor :
+     profileState == "AT POC / MIDDLE" ? warningColor :
+     profileValid ? rangeColor :
+     neutralColor
+
+color locationColor =
+     nearMiddle ? warningColor :
+     locationText == "NO KEY LOCATION" ? neutralColor :
+     rangeColor
+
+color planColor =
+     bullContextReady ? bullColor :
+     bearContextReady ? bearColor :
+     rangeLowContextReady or rangeHighContextReady ? rangeColor :
+     warningColor
+
+color statusColor =
+     bullContextReady ? bullColor :
+     bearContextReady ? bearColor :
+     rangeLowContextReady or rangeHighContextReady ? rangeColor :
+     neutralColor
+
+string selectedFontSize =
+     dashboardFontSize == "Tiny" ? size.tiny :
+     dashboardFontSize == "Normal" ? size.normal :
+     dashboardFontSize == "Large" ? size.large :
+     dashboardFontSize == "Huge" ? size.huge :
+     size.small
+
+//=============================================================================
+// DASHBOARD
+//=============================================================================
+
+string selectedPosition =
+     dashboardPosition == "Top Left" ? position.top_left :
+     dashboardPosition == "Bottom Right" ? position.bottom_right :
+     dashboardPosition == "Bottom Left" ? position.bottom_left :
+     position.top_right
+
+var table dashboard = table.new(
+     selectedPosition,
+     2,
+     7,
+     border_width = 1,
+     border_color = color.new(color.gray, 40)
+)
+
+if barstate.islast
+    table.cell(
+         dashboard,
+         0,
+         0,
+         "ES CONTEXT",
+         text_color = textColor,
+         bgcolor = color.rgb(20, 20, 20),
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         0,
+         "v0.1",
+         text_color = color.silver,
+         bgcolor = color.rgb(20, 20, 20),
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         1,
+         "SESSION",
+         text_color = textColor,
+         bgcolor = labelColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         1,
+         sessionState,
+         text_color = textColor,
+         bgcolor = sessionColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         2,
+         "REGIME",
+         text_color = textColor,
+         bgcolor = labelColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         2,
+         regimeText,
+         text_color = textColor,
+         bgcolor = regimeColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         3,
+         "PROFILE",
+         text_color = textColor,
+         bgcolor = labelColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         3,
+         profileState,
+         text_color = textColor,
+         bgcolor = profileColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         4,
+         "LOCATION",
+         text_color = textColor,
+         bgcolor = labelColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         4,
+         locationText,
+         text_color = textColor,
+         bgcolor = locationColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         5,
+         "PLAN",
+         text_color = textColor,
+         bgcolor = labelColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         5,
+         planText,
+         text_color = textColor,
+         bgcolor = planColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         0,
+         6,
+         "STATUS",
+         text_color = textColor,
+         bgcolor = labelColor,
+         text_size = selectedFontSize
+    )
+
+    table.cell(
+         dashboard,
+         1,
+         6,
+         statusText,
+         text_color = textColor,
+         bgcolor = statusColor,
+         text_size = selectedFontSize
+    )
+
+
+//=============================================================================
+// ALERT CONDITIONS
+//=============================================================================
+
+alertcondition(
+     enableContextAlerts and newBullContext,
+     title = "ES Bull Pullback Context",
+     message = "ES bull context at a valid pullback location. Manually evaluate the second-entry long."
+)
+
+alertcondition(
+     enableContextAlerts and newBearContext,
+     title = "ES Bear Pullback Context",
+     message = "ES bear context at a valid pullback location. Manually evaluate the second-entry short."
+)
+
+alertcondition(
+     enableContextAlerts and newRangeLowContext,
+     title = "ES Range-Low Context",
+     message = "ES is near a range low. Wait for a failed breakdown and manually verify a second-entry long."
+)
+
+alertcondition(
+     enableContextAlerts and newRangeHighContext,
+     title = "ES Range-High Context",
+     message = "ES is near a range high. Wait for a failed breakout and manually verify a second-entry short."
+)
+
+alertcondition(
+     enableContextAlerts and inExecution[1] and not inExecution,
+     title = "ES Execution Window Closed",
+     message = "The ES execution window has closed. No new trades under the current plan."
+)
