@@ -7,6 +7,7 @@ Flat repo of standalone Pine Script v6 indicators. Each `.pine` file is a comple
 | File | Indicator Name | Description |
 |------|---------------|-------------|
 | `cvd-divergence-scanner.pine` | CVD Divergence Scanner | Pivot-based CVD divergence detection (price vs cumulative volume delta) with configurable sensitivity presets, dual delta methods (Close vs Open / Range Weighted), candle highlight on divergence, and alert conditions. |
+| `es-context.pine` | ES Context Filter | Multi-session context dashboard with regime classification (bull/bear/range), EMA 21/8 levels, RTH VWAP, initial balance, manual volume profile levels, location proximity detection, and trade-plan logic. |
 | `cvd-divergence-table.pine` | CVD Divergence Table | Table-based CVD divergence dashboard with regular/hidden divergence detection, VWAP context, trade window filtering, LONG/SHORT OK verdict, multi-preset support (scalp/context/RTH open), and per-type alert conditions. |
 | `daily-key-levels.pine` | Daily Key Levels | Multi-level session key levels (PDH/PDL/PDC, PWH/PWL, Initial Balance, ORB-30, WMH/WML, OVH/OVL, RTH open/high/low) with per-level color, style, and line-width controls. |
 | `es-market-sanity-dashboard.pine` | — | Empty stub — not yet implemented. |
