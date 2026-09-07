@@ -16,9 +16,6 @@ showWML = input.bool(true, "WML (Weekly Model Low)", group="Display")
 showOVH = input.bool(true, "OVH (Overnight High)", group="Display")
 showOVL = input.bool(true, "OVL (Overnight Low)", group="Display")
 showRTHO = input.bool(true, "Open (RTH)", group="Display")
-showIBM = input.bool(true, "IBM (Initial Balance Middle)", group="Display")
-showEMA21 = input.bool(true, "EMA (21)", group="Display")
-showVWAP = input.bool(true, "RTH VWAP", group="Display")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
@@ -34,9 +31,6 @@ colorWML = input.color(color.new(color.yellow, 0), "WM Low Color", group="Colors
 colorOVH = input.color(color.new(color.orange, 0), "OVH Color", group="Colors")
 colorOVL = input.color(color.new(color.orange, 0), "OVL Color", group="Colors")
 colorRTHO = input.color(color.new(color.aqua, 0), "Open (RTH) Color", group="Colors")
-colorIBM = input.color(color.new(color.blue, 0), "IBM Color", group="Colors")
-colorEMA21 = input.color(color.new(color.yellow, 0), "EMA (21) Color", group="Colors")
-colorVWAP = input.color(color.new(color.aqua, 0), "RTH VWAP Color", group="Colors")
 
 // Line Style & Width
 lineStyle = input.string(title="Line Style", defval="Dashed", options=["Solid", "Dashed", "Dotted"], group="Line Style")
@@ -56,7 +50,6 @@ newDay = ta.change(dayofmonth) != 0
 // Session definitions
 inRTH = (hourET == 9 and minuteET >= 30) or (hourET > 9 and hourET < 16) or (hourET == 16 and minuteET == 0)
 inIB = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET < 30))
-rthStart = inRTH and not inRTH[1]
 
 // ORB-30 window: 9:30-10:00
 inOrb30Window = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET == 0))
@@ -88,12 +81,6 @@ if inRTH
         rthHigh := math.max(rthHigh, high)
         rthLow := math.min(rthLow, low)
 
-// ===== EMA (21) =====
-ema21 = ta.ema(close, 21)
-
-// ===== RTH VWAP =====
-vwap = ta.vwap(hlc3, rthStart)
-
 // ===== CALCULATE PREVIOUS WEEK HIGH/LOW =====
 float pwh = request.security(syminfo.tickerid, "W", high[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
 float pwl = request.security(syminfo.tickerid, "W", low[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
@@ -115,11 +102,6 @@ if inIB
     else
         ibHigh := math.max(ibHigh, high)
         ibLow := math.min(ibLow, low)
-
-// ===== IBM (Initial Balance Middle) = midpoint of IBH/IBL =====
-var float ibMid = na
-if inRTH and not na(ibHigh) and not na(ibLow)
-    ibMid := (ibHigh + ibLow) / 2.0
 
 // ===== CALCULATE ORB-30 (9:30-10:00) =====
 var float orb30High = na
@@ -190,7 +172,6 @@ var line linePWH = na
 var line linePWL = na
 var line lineIBH = na
 var line lineIBL = na
-var line lineIBM = na
 var line lineORB30H = na
 var line lineORB30L = na
 var line lineWMH = na
@@ -222,10 +203,9 @@ if barstate.islast
     if showIBH and ibDisplay and not na(ibHigh)
         line.delete(lineIBH)
         lineIBH := line.new(startBar, ibHigh, bar_index, ibHigh, color=colorIBH, width=lineWidth, style=getLineStyle(), extend=extend.right)
-    // IBM (Initial Balance Middle) line (only display from 10:30am onwards)
-    if showIBM and ibDisplay and not na(ibMid)
-        line.delete(lineIBM)
-        lineIBM := line.new(startBar, ibMid, bar_index, ibMid, color=colorIBM, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showIBL and ibDisplay and not na(ibLow)
+        line.delete(lineIBL)
+        lineIBL := line.new(startBar, ibLow, bar_index, ibLow, color=colorIBL, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
     // ORB-30 levels (display from 10:00 to 10:29)
     if showORB30H and orb30Display and orb30Formed and not na(orb30High)
@@ -263,7 +243,6 @@ var label labelPWH = na
 var label labelPWL = na
 var label labelIBH = na
 var label labelIBL = na
-var label labelIBM = na
 var label labelORB30H = na
 var label labelORB30L = na
 var label labelWMH = na
@@ -293,10 +272,9 @@ if barstate.islast
     if showIBH and ibDisplay and not na(ibHigh)
         label.delete(labelIBH)
         labelIBH := label.new(bar_index, ibHigh, "IBH", style=label.style_label_down, color=colorIBH, textcolor=color.white, size=size.normal)
-    // IBM label (only display from 10:30am onwards)
-    if showIBM and ibDisplay and not na(ibMid)
-        label.delete(labelIBM)
-        labelIBM := label.new(bar_index, ibMid, "IBM", style=label.style_label_down, color=colorIBM, textcolor=color.white, size=size.normal)
+    if showIBL and ibDisplay and not na(ibLow)
+        label.delete(labelIBL)
+        labelIBL := label.new(bar_index, ibLow, "IBL", style=label.style_label_down, color=colorIBL, textcolor=color.white, size=size.normal)
 
     // ORB-30 labels (display from 10:00 to 10:29)
     if showORB30H and orb30Display and orb30Formed and not na(orb30High)
@@ -322,10 +300,7 @@ if barstate.islast
         label.delete(labelOVL)
         labelOVL := label.new(bar_index, ovl, "OVL", style=label.style_label_down, color=colorOVL, textcolor=color.white, size=size.normal)
 
+    // Open (RTH) label (display only during RTH 9:30-16:00)
     if showRTHO and inRTH and not na(rthOpen)
         label.delete(labelRTHO)
         labelRTHO := label.new(bar_index, rthOpen, "Open", style=label.style_label_down, color=colorRTHO, textcolor=color.white, size=size.normal)
-
-// ===== PLOT EMA (21) AND RTH VWAP =====
-plot(showEMA21 ? ema21 : na, "EMA 21", colorEMA21, plot.style_line, 0, lineWidth)
-plot(showVWAP and inRTH ? vwap : na, "RTH VWAP", colorVWAP, plot.style_line, 0, lineWidth)
