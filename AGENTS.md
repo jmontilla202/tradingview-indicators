@@ -27,3 +27,9 @@ Copy any `.pine` file content into TradingView's Pine Editor and save as a new i
 - `request.security()` for multi-timeframe / multi-ticker data
 - ET timezone (`"America/New_York"`) for session-based logic
 - Input groups organized by category (Display, Colors, Timeframes, etc.)
+
+## Tooling
+
+- Dev environment is WSL2: use `clip.exe` (or pipe to it) to copy file contents to the Windows clipboard, e.g. `clip.exe < file.pine`.
+- CAVEAT: `clip.exe < file` runs the WSL→Windows interop pipe through the ANSI code page and **corrupts non-ASCII UTF-8** (e.g. `—` em-dashes become mojibake). For files containing non-ASCII, use PowerShell instead and verify byte-for-byte:
+  `powershell.exe -NoProfile -Command 'Set-Clipboard -Value (Get-Content -Path "<abs-win-path>\file.pine" -Raw -Encoding UTF8)'`
