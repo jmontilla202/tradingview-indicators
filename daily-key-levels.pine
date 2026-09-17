@@ -1,3 +1,4 @@
+
 //@version=6
 indicator("Daily Key Levels", overlay=true, max_lines_count=500, max_labels_count=500)
 
@@ -9,16 +10,15 @@ showPWH = input.bool(true, "PWH (Previous Week High)", group="Display")
 showPWL = input.bool(true, "PWL (Previous Week Low)", group="Display")
 showIBH = input.bool(true, "IBH (Initial Balance High)", group="Display")
 showIBL = input.bool(true, "IBL (Initial Balance Low)", group="Display")
+showIBM = input.bool(true, "IBM (Initial Balance Middle)", group="Display")
 showORB30H = input.bool(true, "ORB-30 High", group="Display")
 showORB30L = input.bool(true, "ORB-30 Low", group="Display")
-
-// ORB-30
-orb30MinPct = input.float(80.0, "Min Range (% of 10d avg)", minval=1, maxval=100, step=0.5, group="ORB-30")
 showWMH = input.bool(true, "WMH (Weekly Model High)", group="Display")
 showWML = input.bool(true, "WML (Weekly Model Low)", group="Display")
 showOVH = input.bool(true, "OVH (Overnight High)", group="Display")
 showOVL = input.bool(true, "OVL (Overnight Low)", group="Display")
 showRTHO = input.bool(true, "Open (RTH)", group="Display")
+showIBConf = input.bool(true, "IB Combined Confluence", group="Display")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
@@ -27,6 +27,7 @@ colorPWH = input.color(color.new(color.purple, 0), "PWH Color", group="Colors")
 colorPWL = input.color(color.new(color.purple, 0), "PWL Color", group="Colors")
 colorIBH = input.color(color.new(color.blue, 0), "IBH Color", group="Colors")
 colorIBL = input.color(color.new(color.blue, 0), "IBL Color", group="Colors")
+colorIBM = input.color(color.new(color.blue, 60), "IBM Color", group="Colors")
 colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="Colors")
 colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
 colorWMH = input.color(color.new(color.yellow, 0), "WM High Color", group="Colors")
@@ -34,22 +35,12 @@ colorWML = input.color(color.new(color.yellow, 0), "WM Low Color", group="Colors
 colorOVH = input.color(color.new(color.orange, 0), "OVH Color", group="Colors")
 colorOVL = input.color(color.new(color.orange, 0), "OVL Color", group="Colors")
 colorRTHO = input.color(color.new(color.aqua, 0), "Open (RTH) Color", group="Colors")
+colorIBConfBull = input.color(color.new(color.lime, 0), "IB Confluence Bullish", group="Colors")
+colorIBConfBear = input.color(color.new(color.fuchsia, 0), "IB Confluence Bearish", group="Colors")
 
 // Line Style & Width
 lineStyle = input.string(title="Line Style", defval="Dashed", options=["Solid", "Dashed", "Dotted"], group="Line Style")
 lineWidth = input.int(title="Line Width", defval=1, minval=1, maxval=4, group="Line Style")
-
-// ===== LABEL SETTINGS =====
-labelOffset = input.int(title="Label Offset (bars right)", defval=50, minval=0, maxval=500, group="Labels")
-labelSize = input.string(title="Label Size", defval="Small", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="Labels")
-
-getLabelSize() =>
-    switch labelSize
-        "Tiny" => size.tiny
-        "Small" => size.small
-        "Normal" => size.normal
-        "Large" => size.large
-        "Huge" => size.huge
 
 getLineStyle() =>
     switch lineStyle
@@ -68,7 +59,7 @@ inIB = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET
 
 // ORB-30 window: 9:30-10:00
 inOrb30Window = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET == 0))
-orb30Display = inRTH and ((hourET == 10 and minuteET >= 1) or hourET == 11 or (hourET == 12 and minuteET == 0))
+orb30Display = inRTH and ((hourET == 10 and minuteET >= 0 and minuteET < 30))
 
 // IB display: only after 10:30am
 ibDisplay = inRTH and ((hourET == 10 and minuteET >= 30) or (hourET > 10) or (hourET == 16 and minuteET == 0))
@@ -118,6 +109,64 @@ if inIB
         ibHigh := math.max(ibHigh, high)
         ibLow := math.min(ibLow, low)
 
+// ===== IB COMBINED CONFLUENCE (High/Low Order + Midpoint Close) =====
+// Track which extreme was set first vs last during IB formation
+var int   ibHighBar    = na      // bar_index when IB high was established
+var int   ibLowBar     = na      // bar_index when IB low was established
+var float ibClosePrice = na      // close price of the last bar in IB (10:29 bar)
+var float ibMid        = na      // midpoint of IB range — shared by confluence logic and IBM plot
+var bool  ibConfBull   = false   // dual confluence → expect high break
+var bool  ibConfBear   = false   // dual confluence → expect low break
+var bool  ibConfSet    = false   // true once IB closes and confluence is evaluated
+var string ibConfMidLabel = ""   // for tooltip detail
+var string ibConfHLLabel  = ""   // for tooltip detail
+
+// Reset at RTH open
+if inRTH and not inRTH[1]
+    ibHighBar    := na
+    ibLowBar     := na
+    ibClosePrice := na
+    ibMid        := na
+    ibConfBull   := false
+    ibConfBear   := false
+    ibConfSet    := false
+    ibConfMidLabel := ""
+    ibConfHLLabel  := ""
+
+// During IB: track the bar_index each time a new high or low is printed
+if inIB
+    if na(ibHighBar)
+        // First bar of IB — initialise both
+        ibHighBar := bar_index
+        ibLowBar  := bar_index
+    else
+        if high > ibHigh[1] or (high == ibHigh and bar_index > ibHighBar)
+            ibHighBar := bar_index
+        if low < ibLow[1] or (low == ibLow and bar_index > ibLowBar)
+            ibLowBar := bar_index
+    ibClosePrice := close   // continuously update; final value = IB close
+
+// Evaluate confluence at the transition out of IB (first bar after 10:30)
+if ibDisplay and not ibDisplay[1] and not na(ibHigh) and not na(ibLow) and not na(ibClosePrice)
+    ibConfSet := true
+    ibMid := (ibHigh + ibLow) / 2.0
+
+    // Confluence 1 — Midpoint: did IB close above or below mid?
+    bool closedAboveMid = ibClosePrice > ibMid
+    bool closedBelowMid = ibClosePrice < ibMid
+
+    // Confluence 2 — HL Order: which extreme was set last?
+    bool lowFirstHighLast = ibHighBar > ibLowBar   // high was set AFTER low → bullish
+    bool highFirstLowLast = ibLowBar > ibHighBar    // low was set AFTER high → bearish
+
+    // Combined confluence
+    ibConfBull := closedAboveMid and lowFirstHighLast
+    ibConfBear := closedBelowMid and highFirstLowLast
+
+    // Labels for tooltip
+    ibConfMidLabel := closedAboveMid ? "Above Mid ✓" : closedBelowMid ? "Below Mid ✓" : "At Mid ⚊"
+    ibConfHLLabel  := lowFirstHighLast ? "Low 1st → High Last ✓" : highFirstLowLast ? "High 1st → Low Last ✓" : "Simultaneous ⚊"
+
 // ===== CALCULATE ORB-30 (9:30-10:00) =====
 var float orb30High = na
 var float orb30Low = na
@@ -141,16 +190,6 @@ if inOrb30Window
 // Mark ORB-30 as formed when window ends
 if not inOrb30Window and inOrb30Window[1] and not na(orb30High)
     orb30Formed := true
-
-// Track last 10 daily ORB-30 ranges for average comparison
-var float[] orb30RangeDays = array.new_float()
-if orb30Formed and not orb30Formed[1]
-    array.push(orb30RangeDays, orb30High - orb30Low)
-    if array.size(orb30RangeDays) > 10
-        array.shift(orb30RangeDays)
-
-float avgOrb30Range = na(orb30RangeDays) ? na : array.avg(orb30RangeDays)
-orb30Show = orb30Formed and not na(avgOrb30Range) and (orb30High - orb30Low) >= (avgOrb30Range * orb30MinPct / 100)
 
 // ===== CALCULATE WEEKLY MODEL (Sun 18:00 ET - Tue 16:00 ET) =====
 var float wmHigh = na
@@ -197,6 +236,7 @@ var line linePWH = na
 var line linePWL = na
 var line lineIBH = na
 var line lineIBL = na
+var line lineIBM = na
 var line lineORB30H = na
 var line lineORB30L = na
 var line lineWMH = na
@@ -231,12 +271,15 @@ if barstate.islast
     if showIBL and ibDisplay and not na(ibLow)
         line.delete(lineIBL)
         lineIBL := line.new(startBar, ibLow, bar_index, ibLow, color=colorIBL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    if showIBM and ibDisplay and not na(ibMid)
+        line.delete(lineIBM)
+        lineIBM := line.new(startBar, ibMid, bar_index, ibMid, color=colorIBM, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
-    // ORB-30 levels (display from 10:01-12:00, only if range >= min % of 10d avg)
-    if showORB30H and orb30Display and orb30Show and not na(orb30High)
+    // ORB-30 levels (display from 10:00 to 10:29)
+    if showORB30H and orb30Display and orb30Formed and not na(orb30High)
         line.delete(lineORB30H)
         lineORB30H := line.new(startBar, orb30High, bar_index, orb30High, color=colorORB30H, width=lineWidth, style=getLineStyle(), extend=extend.right)
-    if showORB30L and orb30Display and orb30Show and not na(orb30Low)
+    if showORB30L and orb30Display and orb30Formed and not na(orb30Low)
         line.delete(lineORB30L)
         lineORB30L := line.new(startBar, orb30Low, bar_index, orb30Low, color=colorORB30L, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
@@ -261,6 +304,54 @@ if barstate.islast
         line.delete(lineRTHO)
         lineRTHO := line.new(startBar, rthOpen, bar_index, rthOpen, color=colorRTHO, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
+// ===== IB CONFLUENCE VISUAL CUE =====
+// Show a marker at the probable break level when dual confluence fires
+var label labelIBConfBull = na
+var label labelIBConfBear = na
+
+if barstate.islast
+    label.delete(labelIBConfBull)
+    label.delete(labelIBConfBear)
+
+    if showIBConf and ibConfSet and ibDisplay
+        if ibConfBull and not na(ibHigh)
+            string tip = "IB DUAL CONFLUENCE → HIGH BREAK\n" +
+                 "─────────────────────────\n" +
+                 "Midpoint: " + ibConfMidLabel + "\n" +
+                 "HL Order: " + ibConfHLLabel + "\n" +
+                 "─────────────────────────\n" +
+                 "~74% break before noon\n" +
+                 "~84% break before 4pm\n" +
+                 "─────────────────────────\n" +
+                 "Look for 40-60% pullback\n" +
+                 "into unmitigated leg for\n" +
+                 "long entry to IBH target"
+            labelIBConfBull := label.new(bar_index + 3, ibHigh, "⬆ IB\nDUAL",
+                 style=label.style_label_down,
+                 color=colorIBConfBull,
+                 textcolor=color.black,
+                 size=size.normal,
+                 tooltip=tip)
+
+        if ibConfBear and not na(ibLow)
+            string tip = "IB DUAL CONFLUENCE → LOW BREAK\n" +
+                 "─────────────────────────\n" +
+                 "Midpoint: " + ibConfMidLabel + "\n" +
+                 "HL Order: " + ibConfHLLabel + "\n" +
+                 "─────────────────────────\n" +
+                 "~74% break before noon\n" +
+                 "~84% break before 4pm\n" +
+                 "─────────────────────────\n" +
+                 "Look for 40-60% pullback\n" +
+                 "into unmitigated leg for\n" +
+                 "short entry to IBL target"
+            labelIBConfBear := label.new(bar_index + 3, ibLow, "⬇ IB\nDUAL",
+                 style=label.style_label_up,
+                 color=colorIBConfBear,
+                 textcolor=color.black,
+                 size=size.normal,
+                 tooltip=tip)
+
 // ===== LABELS =====
 var label labelPDH = na
 var label labelPDL = na
@@ -268,6 +359,7 @@ var label labelPWH = na
 var label labelPWL = na
 var label labelIBH = na
 var label labelIBL = na
+var label labelIBM = na
 var label labelORB30H = na
 var label labelORB30L = na
 var label labelWMH = na
@@ -277,57 +369,63 @@ var label labelOVL = na
 var label labelRTHO = na
 
 if barstate.islast
-    labelX = bar_index + labelOffset
-
-    // PDH/PDL — plain text offset right of last bar
+    // Previous Day labels
     if showPDH and not na(pdh)
         label.delete(labelPDH)
-        labelPDH := label.new(labelX, pdh, "PDH", style=label.style_none, textcolor=colorPDH, size=getLabelSize())
+        labelPDH := label.new(bar_index, pdh, "PDH", style=label.style_label_down, color=colorPDH, textcolor=color.white, size=size.normal)
     if showPDL and not na(pdl)
         label.delete(labelPDL)
-        labelPDL := label.new(labelX, pdl, "PDL", style=label.style_none, textcolor=colorPDL, size=getLabelSize())
+        labelPDL := label.new(bar_index, pdl, "PDL", style=label.style_label_down, color=colorPDL, textcolor=color.white, size=size.normal)
 
-    // PWH/PWL — plain text offset right of last bar
+    // Previous Week labels
     if showPWH and not na(pwh)
         label.delete(labelPWH)
-        labelPWH := label.new(labelX, pwh, "PWH", style=label.style_none, textcolor=colorPWH, size=getLabelSize())
+        labelPWH := label.new(bar_index, pwh, "PWH", style=label.style_label_down, color=colorPWH, textcolor=color.white, size=size.normal)
     if showPWL and not na(pwl)
         label.delete(labelPWL)
-        labelPWL := label.new(labelX, pwl, "PWL", style=label.style_none, textcolor=colorPWL, size=getLabelSize())
+        labelPWL := label.new(bar_index, pwl, "PWL", style=label.style_label_down, color=colorPWL, textcolor=color.white, size=size.normal)
 
-    // IB labels — plain text offset right of last bar
+    // IB labels (only display from 10:30am onwards)
     if showIBH and ibDisplay and not na(ibHigh)
         label.delete(labelIBH)
-        labelIBH := label.new(labelX, ibHigh, "IBH", style=label.style_none, textcolor=colorIBH, size=getLabelSize())
+        labelIBH := label.new(bar_index, ibHigh, "IBH", style=label.style_label_down, color=colorIBH, textcolor=color.white, size=size.normal)
     if showIBL and ibDisplay and not na(ibLow)
         label.delete(labelIBL)
-        labelIBL := label.new(labelX, ibLow, "IBL", style=label.style_none, textcolor=colorIBL, size=getLabelSize())
+        labelIBL := label.new(bar_index, ibLow, "IBL", style=label.style_label_down, color=colorIBL, textcolor=color.white, size=size.normal)
+    if showIBM and ibDisplay and not na(ibMid)
+        label.delete(labelIBM)
+        labelIBM := label.new(bar_index, ibMid, "IBM", style=label.style_label_down, color=colorIBM, textcolor=color.white, size=size.normal)
 
-    // ORB-30 — plain text offset right of last bar
-    if showORB30H and orb30Display and orb30Show and not na(orb30High)
+    // ORB-30 labels (display from 10:00 to 10:29)
+    if showORB30H and orb30Display and orb30Formed and not na(orb30High)
         label.delete(labelORB30H)
-        labelORB30H := label.new(labelX, orb30High, "ORB30-High", style=label.style_none, textcolor=colorORB30H, size=getLabelSize())
-    if showORB30L and orb30Display and orb30Show and not na(orb30Low)
+        labelORB30H := label.new(bar_index, orb30High, "ORB-30-H", style=label.style_label_down, color=colorORB30H, textcolor=color.white, size=size.normal)
+    if showORB30L and orb30Display and orb30Formed and not na(orb30Low)
         label.delete(labelORB30L)
-        labelORB30L := label.new(labelX, orb30Low, "ORB30-Low", style=label.style_none, textcolor=colorORB30L, size=getLabelSize())
+        labelORB30L := label.new(bar_index, orb30Low, "ORB-30-L", style=label.style_label_down, color=colorORB30L, textcolor=color.white, size=size.normal)
 
-    // WMH/WML — plain text offset right of last bar
+    // Weekly Model labels (display Wed-Fri during RTH)
     if showWMH and wmDisplay and not na(wmHigh)
         label.delete(labelWMH)
-        labelWMH := label.new(labelX, wmHigh, "WMH", style=label.style_none, textcolor=colorWMH, size=getLabelSize())
+        labelWMH := label.new(bar_index, wmHigh, "WMH", style=label.style_label_down, color=colorWMH, textcolor=color.white, size=size.normal)
     if showWML and wmDisplay and not na(wmLow)
         label.delete(labelWML)
-        labelWML := label.new(labelX, wmLow, "WML", style=label.style_none, textcolor=colorWML, size=getLabelSize())
+        labelWML := label.new(bar_index, wmLow, "WML", style=label.style_label_down, color=colorWML, textcolor=color.white, size=size.normal)
 
-    // OVH/OVL — plain text offset right of last bar
+    // Overnight High/Low labels (display only during RTH 9:30-16:00)
     if showOVH and inRTH and not na(ovh)
         label.delete(labelOVH)
-        labelOVH := label.new(labelX, ovh, "OVH", style=label.style_none, textcolor=colorOVH, size=getLabelSize())
+        labelOVH := label.new(bar_index, ovh, "OVH", style=label.style_label_down, color=colorOVH, textcolor=color.white, size=size.normal)
+
     if showOVL and inRTH and not na(ovl)
         label.delete(labelOVL)
-        labelOVL := label.new(labelX, ovl, "OVL", style=label.style_none, textcolor=colorOVL, size=getLabelSize())
+        labelOVL := label.new(bar_index, ovl, "OVL", style=label.style_label_down, color=colorOVL, textcolor=color.white, size=size.normal)
 
-    // Open (RTH) — plain text offset right of last bar
+    // Open (RTH) label (display only during RTH 9:30-16:00)
     if showRTHO and inRTH and not na(rthOpen)
         label.delete(labelRTHO)
-        labelRTHO := label.new(labelX, rthOpen, "Open", style=label.style_none, textcolor=colorRTHO, size=getLabelSize())
+        labelRTHO := label.new(bar_index, rthOpen, "Open", style=label.style_label_down, color=colorRTHO, textcolor=color.white, size=size.normal)
+
+// ===== IB CONFLUENCE ALERT =====
+alertcondition(ibConfBull and ibDisplay and not ibDisplay[1], "IB Dual Confluence → High Break", "IB dual confluence: expect HIGH break (~74% pre-noon, ~84% pre-close)")
+alertcondition(ibConfBear and ibDisplay and not ibDisplay[1], "IB Dual Confluence → Low Break",  "IB dual confluence: expect LOW break (~74% pre-noon, ~84% pre-close)")

@@ -1,0 +1,180 @@
+//@version=6
+indicator("Imre's Multi-Timeframe Regime Filter", "MTF Regime", overlay = true)
+
+// ─── Inputs ───────────────────────────────────────────────────────────────
+grpDisp    = "Display Settings"
+tblPosIn   = input.string("Top Right", "Table Position", options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group = grpDisp)
+fontSizeIn = input.string("Normal", "Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = grpDisp)
+showLegend = input.bool(true, "Show Setup Recommendations", group = grpDisp)
+
+grpColor   = "Colors"
+bullCol    = input.color(color.new(#26a69a, 0), "Bullish (OTFU)", group = grpColor)
+bearCol    = input.color(color.new(#ef5350, 0), "Bearish (OTFD)", group = grpColor)
+balCol     = input.color(color.new(#787b86, 0), "Balance",         group = grpColor)
+headerCol  = input.color(color.new(#1e222d, 0), "Header BG",       group = grpColor)
+textCol    = input.color(color.white,           "Text Color",      group = grpColor)
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+f_pos(s) =>
+    switch s
+        "Top Left"      => position.top_left
+        "Top Center"    => position.top_center
+        "Top Right"     => position.top_right
+        "Middle Left"   => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right"  => position.middle_right
+        "Bottom Left"   => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Right"  => position.bottom_right
+        =>                 position.top_right
+
+f_font(s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        =>          size.normal
+
+// ─── Regime Engine ────────────────────────────────────────────────────────
+// Returns regime state on the requested timeframe.
+//   1  = One Time Framing Up  (buyers in control)
+
+//  -1  = One Time Framing Down (sellers in control)
+//   0  = Balance
+//
+// Tracks the reference candle that started balance; balance ends only when
+// price closes above that ref-high (resume OTFU) or below ref-low (resume OTFD)
+
+f_regime() =>
+    var int   state    = 0        // last confirmed regime
+    var float refHigh  = na       // balance anchor high
+    var float refLow   = na       // balance anchor low
+
+    // Use previous *confirmed* candle vs the one before it
+    h1 = high[1], l1 = low[1], c1 = close[1]
+    h2 = high[2], l2 = low[2]
+
+    otfu_strict = h1 > h2 and l1 > l2 and c1 > h2
+    otfd_strict = l1 < l2 and h1 < h2 and c1 < l2
+
+    if state == 1
+        // Currently OTFU – stays OTFU until a candle fails the strict OTFU test
+        if otfu_strict
+            state := 1
+        else
+
+            // Balance begins; anchor on the prior OTFU candle's extremes
+            state   := 0
+            refHigh := h2
+            refLow  := l2
+            // Check if this new candle already resolves the balance
+            if c1 > refHigh
+                state := 1
+            else if c1 < refLow
+                state := -1
+    else if state == -1
+        if otfd_strict
+            state := -1
+        else
+
+            state   := 0
+            refHigh := h2
+            refLow  := l2
+            if c1 > refHigh
+
+                state := 1
+            else if c1 < refLow
+                state := -1
+    else
+        // In balance – check for breakout of stored anchor
+        if not na(refHigh) and c1 > refHigh
+            state := 1
+        else if not na(refLow) and c1 < refLow
+            state := -1
+        else if na(refHigh)
+            // First bar of the script; seed anchors
+            refHigh := h2
+
+            refLow  := l2
+
+    state
+
+// Pull the regime state from each higher timeframe
+mRegime = request.security(syminfo.tickerid, "M", f_regime(), lookahead = barmerge.lookahead_off)
+wRegime = request.security(syminfo.tickerid, "W", f_regime(), lookahead = barmerge.lookahead_off)
+dRegime = request.security(syminfo.tickerid, "D", f_regime(), lookahead = barmerge.lookahead_off)
+
+// ─── Interpretation ───────────────────────────────────────────────────────
+f_label(r) => r ==  1 ? "OTF UP" : r == -1 ? "OTF DOWN" : "BALANCE"
+f_color(r) => r ==  1 ? bullCol  : r == -1 ? bearCol    : balCol
+
+// Alignment score
+alignedUp   = mRegime ==  1 and wRegime ==  1 and dRegime ==  1
+alignedDown = mRegime == -1 and wRegime == -1 and dRegime == -1
+allBalance  = mRegime ==  0 and wRegime ==  0 and dRegime ==  0
+
+// Setup recommendation based on Imre's playbook
+string setupText  = ""
+color  setupColor = balCol
+
+
+if alignedUp
+    setupText  := "✓ FULL BULL ALIGNMENT\n• Momentum breakouts (long)\n• Pullbacks to prior value (long)\n• Do NOT fade strength / no shorts"
+    setupColor := bullCol
+else if alignedDown
+    setupText  := "✓ FULL BEAR ALIGNMENT\n• Momentum breakdowns (short)\n• Pullbacks to prior value (short)\n• Do NOT fade weakness / no longs"
+    setupColor := bearCol
+
+else if allBalance
+    setupText  := "◆ FULL BALANCE\n• Fade extremes of the range\n• Short VAH → target VAL\n• Long VAL → target VAH\n• Avoid momentum / breakout plays"
+    setupColor := balCol
+else
+    // Mixed – lean on the daily but wait for alignment
+    dailyBias = dRegime ==  1 ? "bullish" : dRegime == -1 ? "bearish" : "neutral"
+    setupText := "⚠ MIXED REGIME – Sit on hands\n• Timeframes disagree\n• Daily bias: " + dailyBias + "\n• Wait for multi-TF alignment\n• Reduce size or skip session"
+    setupColor := color.new(color.orange, 0)
+
+// ─── Table ────────────────────────────────────────────────────────────────
+var table t = table.new(f_pos(tblPosIn), 2, showLegend ? 6 : 5, border_width = 1, frame_color = color.new(color.black, 50), frame_width = 1)
+
+if barstate.islast
+    fs = f_font(fontSizeIn)
+
+    // Header
+
+    table.cell(t, 0, 0, "TIMEFRAME", bgcolor = headerCol, text_color = textCol, text_size = fs)
+    table.cell(t, 1, 0, "REGIME",    bgcolor = headerCol, text_color = textCol, text_size = fs)
+
+    // Monthly
+
+    table.cell(t, 0, 1, "Monthly",         bgcolor = color.new(#2a2e39, 0), text_color = textCol, text_size = fs)
+    table.cell(t, 1, 1, f_label(mRegime),  bgcolor = f_color(mRegime),      text_color = color.white, text_size = fs)
+
+    // Weekly
+    table.cell(t, 0, 2, "Weekly",          bgcolor = color.new(#2a2e39, 0), text_color = textCol, text_size = fs)
+    table.cell(t, 1, 2, f_label(wRegime),  bgcolor = f_color(wRegime),      text_color = color.white, text_size = fs)
+
+    // Daily
+    table.cell(t, 0, 3, "Daily",           bgcolor = color.new(#2a2e39, 0), text_color = textCol, text_size = fs)
+    table.cell(t, 1, 3, f_label(dRegime),  bgcolor = f_color(dRegime),      text_color = color.white, text_size = fs)
+
+    // Alignment summary row
+    alignTxt = alignedUp ? "★ 3/3 BULL" : alignedDown ? "★ 3/3 BEAR" : allBalance ? "◆ 3/3 BALANCE" : "MIXED"
+    table.cell(t, 0, 4, "Alignment",       bgcolor = headerCol,             text_color = textCol,   text_size = fs)
+
+    table.cell(t, 1, 4, alignTxt,          bgcolor = setupColor,            text_color = color.white, text_size = fs)
+
+    // Recommendation
+    if showLegend
+        table.merge_cells(t, 0, 5, 1, 5)
+        table.cell(t, 0, 5, setupText, bgcolor = color.new(#1e222d, 10), text_color = textCol, text_size = fs, text_halign = text.align_left)
+
+// ─── Alerts ───────────────────────────────────────────────────────────────
+alertcondition(alignedUp   and not alignedUp[1],   "Full Bull Alignment",    "All 3 timeframes now One Time Framing UP")
+
+alertcondition(alignedDown and not alignedDown[1], "Full Bear Alignment",    "All 3 timeframes now One Time Framing DOWN")
+
+alertcondition(allBalance  and not allBalance[1],  "Full Balance",           "All 3 timeframes now in BALANCE")
+
