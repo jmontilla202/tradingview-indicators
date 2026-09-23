@@ -1,0 +1,498 @@
+
+//@version=6
+indicator("Futures Confluence Table [ES/NQ]", overlay=true, max_lines_count=50, max_labels_count=100, max_boxes_count=50)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+grpTbl = "Table Display"
+tblPos      = input.string("Top Right", "Table Position", options=["Top Left","Top Right","Middle Right","Bottom Right","Bottom Left"], group=grpTbl)
+tblSize     = input.string("normal", "Font Size", options=["tiny","small","normal","large","huge"], group=grpTbl)
+hideNeutral = input.bool(true, "Hide neutral/inactive rows", group=grpTbl)
+showBiasBar = input.bool(true, "Show top Bias summary row", group=grpTbl)
+maxRows     = input.int(12, "Max rows shown", minval=4, maxval=20, group=grpTbl)
+
+grpSess = "Sessions (ET)"
+sessPre  = input.session("0400-0930", "Premarket", group=grpSess)
+sessRTH  = input.session("0930-1600", "RTH",       group=grpSess)
+sessTZ   = input.string("America/New_York", "Timezone", group=grpSess)
+
+grpMA = "Moving Averages"
+emaFastLen = input.int(9,  "EMA Fast",  group=grpMA)
+emaSlowLen = input.int(21, "EMA Slow",  group=grpMA)
+emaTrndLen = input.int(50, "EMA Trend", group=grpMA)
+
+grpRSI = "RSI"
+rsiLen   = input.int(14, "RSI Length", group=grpRSI)
+rsiOB    = input.int(70, "Overbought", group=grpRSI)
+rsiOS    = input.int(30, "Oversold",   group=grpRSI)
+
+grpMTF = "Multi-Timeframe"
+tf1 = input.timeframe("5",  "MTF 1", group=grpMTF)
+tf2 = input.timeframe("15", "MTF 2", group=grpMTF)
+tf3 = input.timeframe("60", "MTF 3", group=grpMTF)
+
+grpLiq = "Liquidity"
+eqTolTicks = input.int(4, "Equal H/L tolerance (ticks)", minval=1, group=grpLiq)
+liqLookback = input.int(50, "Liquidity lookback bars", minval=10, group=grpLiq)
+
+grpAbs = "Absorption"
+absVolMult   = input.float(1.8, "Absorption vol multiplier", step=0.1, group=grpAbs)
+absRangeMult = input.float(0.7, "Max range vs ATR",          step=0.1, group=grpAbs)
+absWickPct   = input.float(0.55,"Min wick % of range",       step=0.05,group=grpAbs)
+
+// ============================================================================
+// CORE CALCS
+// ============================================================================
+atr14 = ta.atr(14)
+vol   = volume
+volMA = ta.sma(volume, 20)
+
+emaF = ta.ema(close, emaFastLen)
+emaS = ta.ema(close, emaSlowLen)
+emaT = ta.ema(close, emaTrndLen)
+
+// VWAP (session-based; TV built-in resets daily by default)
+vwapVal = ta.vwap(hlc3)
+
+// RSI
+rsi = ta.rsi(close, rsiLen)
+
+// Session flags
+inPre = not na(time(timeframe.period, sessPre, sessTZ))
+inRTH = not na(time(timeframe.period, sessRTH, sessTZ))
+inGlobex = not inPre and not inRTH
+
+// Proxy delta (close position within bar * volume)
+rng = high - low
+proxyDelta = rng > 0 ? ((close - low) - (high - close)) / rng * volume : 0.0
+cumDelta = ta.cum(proxyDelta)
+deltaSMA = ta.sma(proxyDelta, 20)
+
+// ============================================================================
+// MTF (non-repainting)
+// ============================================================================
+f_trend(src, fast, slow) => ta.ema(src, fast) > ta.ema(src, slow) ? 1 : ta.ema(src, fast) < ta.ema(src, slow) ? -1 : 0
+
+mtf1Trend = request.security(syminfo.tickerid, tf1, f_trend(close, emaFastLen, emaSlowLen), lookahead=barmerge.lookahead_off)
+mtf2Trend = request.security(syminfo.tickerid, tf2, f_trend(close, emaFastLen, emaSlowLen), lookahead=barmerge.lookahead_off)
+mtf3Trend = request.security(syminfo.tickerid, tf3, f_trend(close, emaFastLen, emaSlowLen), lookahead=barmerge.lookahead_off)
+
+mtf1RSI = request.security(syminfo.tickerid, tf1, ta.rsi(close, rsiLen), lookahead=barmerge.lookahead_off)
+mtf2RSI = request.security(syminfo.tickerid, tf2, ta.rsi(close, rsiLen), lookahead=barmerge.lookahead_off)
+mtf3RSI = request.security(syminfo.tickerid, tf3, ta.rsi(close, rsiLen), lookahead=barmerge.lookahead_off)
+
+mtfAlign = mtf1Trend + mtf2Trend + mtf3Trend  // -3..+3
+
+// ============================================================================
+// SESSION LEVELS (prior day + overnight + premarket)
+// ============================================================================
+var float pdh = na, var float pdl = na
+var float onh = na, var float onl = na  // overnight (Globex)
+var float pmh = na, var float pml = na  // premarket
+var float rthOpen = na
+var float rthH = na, var float rthL = na
+
+newDay = ta.change(time("D")) != 0
+if newDay
+    pdh := high[1]  // simplistic; refined below via running trackers
+    pdl := low[1]
+
+// Track session extremes
+var float _onH = na, var float _onL = na
+if inGlobex
+    _onH := na(_onH) ? high : math.max(_onH, high)
+    _onL := na(_onL) ? low  : math.min(_onL, low)
+if not inGlobex and not na(_onH)
+    onh := _onH
+    onl := _onL
+    _onH := na
+    _onL := na
+
+var float _pmH = na, var float _pmL = na
+if inPre
+    _pmH := na(_pmH) ? high : math.max(_pmH, high)
+    _pmL := na(_pmL) ? low  : math.min(_pmL, low)
+if not inPre and not na(_pmH)
+    pmh := _pmH
+    pml := _pmL
+    _pmH := na
+    _pmL := na
+
+var float _rH = na, var float _rL = na, var float _rO = na
+if inRTH
+    if na(_rO)
+        _rO := open
+    _rH := na(_rH) ? high : math.max(_rH, high)
+    _rL := na(_rL) ? low  : math.min(_rL, low)
+if not inRTH and not na(_rH)
+    rthOpen := _rO
+    rthH := _rH
+    rthL := _rL
+    _rO := na, _rH := na, _rL := na
+
+// Also update running RTH H/L for live use
+rthHLive = inRTH ? (na(_rH) ? high : _rH) : rthH
+rthLLive = inRTH ? (na(_rL) ? low  : _rL) : rthL
+
+// ============================================================================
+// DETECTORS
+// ============================================================================
+
+// --- 1) Trend regime (only if obvious) ---
+trendUp   = emaF > emaS and emaS > emaT and close > emaT
+trendDown = emaF < emaS and emaS < emaT and close < emaT
+regimeDir = trendUp ? 1 : trendDown ? -1 : 0
+// Chop detection: EMAs tangled + low ATR expansion
+atrExp = atr14 / ta.sma(atr14, 50)
+chop = math.abs(emaF - emaT) / atr14 < 0.5 and atrExp < 1.1
+squeeze = atrExp < 0.85
+
+// --- 2) VWAP relationship ---
+vwapDist = (close - vwapVal) / atr14
+aboveVWAP = close > vwapVal
+vwapReclaim = ta.crossover(close, vwapVal)
+vwapReject  = ta.crossunder(close, vwapVal)
+
+// --- 3) RSI conditions ---
+rsiBull = rsi > 50 and rsi < rsiOB
+rsiBear = rsi < 50 and rsi > rsiOS
+rsiOBnow = rsi >= rsiOB
+rsiOSnow = rsi <= rsiOS
+
+// RSI divergence (simple 5-bar pivot)
+rsiDivBull = low < ta.lowest(low[1], 5) and rsi > ta.lowest(rsi[1], 5)
+rsiDivBear = high > ta.highest(high[1], 5) and rsi < ta.highest(rsi[1], 5)
+
+// --- 4) Volume delta divergence (proxy) ---
+priceHH = high > ta.highest(high[1], 10)
+priceLL = low  < ta.lowest(low[1], 10)
+deltaLow = ta.lowest(proxyDelta[1], 10)
+deltaHigh = ta.highest(proxyDelta[1], 10)
+bearDeltaDiv = priceHH and proxyDelta < deltaHigh * 0.6
+bullDeltaDiv = priceLL and proxyDelta > deltaLow  * 0.6
+
+// --- 5) Absorption ---
+tickSz = syminfo.mintick
+bigVol = volume > volMA * absVolMult
+smallRange = rng < atr14 * absRangeMult
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+absorbSellers = bigVol and smallRange and lowerWick > rng * absWickPct  // buyers absorbing
+absorbBuyers  = bigVol and smallRange and upperWick > rng * absWickPct  // sellers absorbing
+
+// --- 6) Liquidity pools & equal highs/lows ---
+eqTol = tickSz * eqTolTicks
+recentHigh = ta.highest(high, liqLookback)
+recentLow  = ta.lowest(low,  liqLookback)
+// Equal highs = current swing high within tol of previous swing high
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+var float lastPH = na, var float prevPH = na
+var float lastPL = na, var float prevPL = na
+if not na(ph)
+    prevPH := lastPH
+    lastPH := ph
+if not na(pl)
+    prevPL := lastPL
+    lastPL := pl
+eqHighs = not na(lastPH) and not na(prevPH) and math.abs(lastPH - prevPH) <= eqTol
+eqLows  = not na(lastPL) and not na(prevPL) and math.abs(lastPL - prevPL) <= eqTol
+
+// Nearest liquidity target
+var array<float>  tgtLevels = array.new_float()
+var array<string> tgtNames  = array.new_string()
+array.clear(tgtLevels)
+array.clear(tgtNames)
+
+if not na(pdh)
+    array.push(tgtLevels, pdh), array.push(tgtNames, "PDH")
+if not na(pdl)
+    array.push(tgtLevels, pdl), array.push(tgtNames, "PDL")
+if not na(onh)
+    array.push(tgtLevels, onh), array.push(tgtNames, "ONH")
+if not na(onl)
+    array.push(tgtLevels, onl), array.push(tgtNames, "ONL")
+if not na(pmh)
+    array.push(tgtLevels, pmh), array.push(tgtNames, "PMH")
+if not na(pml)
+    array.push(tgtLevels, pml), array.push(tgtNames, "PML")
+
+float  nearestTgt  = na
+string nearestName = ""
+float  nearestDist = 1e10
+int    tgtCount    = array.size(tgtLevels)
+
+if tgtCount > 0
+    for i = 0 to tgtCount - 1
+        lv = array.get(tgtLevels, i)
+        d  = math.abs(close - lv)
+        if d < nearestDist
+            nearestDist := d
+            nearestTgt  := lv
+            nearestName := array.get(tgtNames, i)
+
+liqNear = tgtCount > 0 and not na(nearestTgt) and nearestDist < atr14 * 1.5
+
+
+// --- 7) Engineered liquidity (sweep + reversal) ---
+sweepHigh = high > lastPH and close < lastPH and not na(lastPH)
+sweepLow  = low  < lastPL and close > lastPL and not na(lastPL)
+engLiqBear = eqHighs and sweepHigh
+engLiqBull = eqLows  and sweepLow
+
+// --- 8) Price action patterns ---
+bullEngulf = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+bearEngulf = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+hammer = lowerWick > rng * 0.6 and (high - close) < rng * 0.2 and rng > 0
+shooter = upperWick > rng * 0.6 and (close - low) < rng * 0.2 and rng > 0
+insideBar = high < high[1] and low > low[1]
+
+// --- 9) AMD phase inference ---
+// Accumulation: Globex range building (low ATR expansion, small range)
+// Manipulation: Sweep of ON/PM extreme early in session
+// Distribution: Post-sweep directional move with trend alignment
+amdPhase = ""
+amdDir = 0
+sweptONH = inRTH and high > onh and close < onh and not na(onh)
+sweptONL = inRTH and low  < onl and close > onl and not na(onl)
+sweptPMH = inRTH and high > pmh and close < pmh and not na(pmh)
+sweptPML = inRTH and low  < pml and close > pml and not na(pml)
+
+if inGlobex and atrExp < 0.9
+    amdPhase := "Accumulation"
+if sweptONH or sweptPMH
+    amdPhase := "Manipulation (Buyside swept)"
+    amdDir := -1
+if sweptONL or sweptPML
+    amdPhase := "Manipulation (Sellside swept)"
+    amdDir := 1
+if inRTH and trendUp and mtfAlign >= 2 and not (sweptONH or sweptPMH)
+    amdPhase := "Distribution (Up)"
+    amdDir := 1
+if inRTH and trendDown and mtfAlign <= -2 and not (sweptONL or sweptPML)
+    amdPhase := "Distribution (Down)"
+    amdDir := -1
+
+// --- 10) Reversal vs Continuation ---
+reversalBull = (absorbSellers or bullDeltaDiv or rsiDivBull or engLiqBull or hammer) and close > emaF
+reversalBear = (absorbBuyers  or bearDeltaDiv or rsiDivBear or engLiqBear or shooter) and close < emaF
+continuationBull = trendUp   and close > vwapVal and mtfAlign >= 2 and rsiBull
+continuationBear = trendDown and close < vwapVal and mtfAlign <= -2 and rsiBear
+
+// ============================================================================
+// CONFLUENCE SCORING
+// ============================================================================
+bullScore = 0
+bearScore = 0
+
+bullScore += trendUp ? 2 : 0
+bearScore += trendDown ? 2 : 0
+bullScore += aboveVWAP ? 1 : 0
+bearScore += not aboveVWAP ? 1 : 0
+bullScore += mtfAlign > 0 ? mtfAlign : 0
+bearScore += mtfAlign < 0 ? -mtfAlign : 0
+bullScore += rsiBull ? 1 : 0
+bearScore += rsiBear ? 1 : 0
+bullScore += absorbSellers ? 2 : 0
+bearScore += absorbBuyers  ? 2 : 0
+bullScore += bullDeltaDiv ? 2 : 0
+bearScore += bearDeltaDiv ? 2 : 0
+bullScore += engLiqBull ? 3 : 0
+bearScore += engLiqBear ? 3 : 0
+bullScore += bullEngulf or hammer ? 1 : 0
+bearScore += bearEngulf or shooter ? 1 : 0
+bullScore += amdDir > 0 ? 2 : 0
+bearScore += amdDir < 0 ? 2 : 0
+
+netScore = bullScore - bearScore
+maxPossible = 18.0
+confPct = math.min(100, math.round(math.abs(netScore) / maxPossible * 100))
+biasDir = netScore > 2 ? 1 : netScore < -2 ? -1 : 0
+biasTxt = biasDir > 0 ? "BULLISH" : biasDir < 0 ? "BEARISH" : "NEUTRAL"
+
+f_conf(pct) => pct >= 70 ? "High" : pct >= 40 ? "Med" : "Low"
+
+// ============================================================================
+// TABLE BUILD
+// ============================================================================
+f_pos(s) =>
+    s == "Top Left"      ? position.top_left      :
+     s == "Top Right"     ? position.top_right     :
+     s == "Middle Right"  ? position.middle_right  :
+     s == "Bottom Right"  ? position.bottom_right  :
+     s == "Bottom Left"   ? position.bottom_left   : position.top_right
+
+f_size(s) =>
+    s == "tiny"   ? size.tiny   :
+     s == "small"  ? size.small  :
+     s == "normal" ? size.normal :
+     s == "large"  ? size.large  : size.huge
+
+var table t = table.new(f_pos(tblPos), 4, 25, border_width=1, frame_color=color.new(color.gray, 60), frame_width=1)
+
+// Row buffer
+var array<string> rNames = array.new_string()
+var array<string> rDirs  = array.new_string()
+var array<string> rConfs = array.new_string()
+var array<string> rNotes = array.new_string()
+var array<color>  rCols  = array.new_color()
+
+f_addRow(name, dir, conf, note, active) =>
+    if active or not hideNeutral
+        array.push(rNames, name)
+        array.push(rDirs,  dir)
+        array.push(rConfs, conf)
+        array.push(rNotes, note)
+        c = dir == "🟢" ? color.new(color.green, 85) : dir == "🔴" ? color.new(color.red, 85) : color.new(color.gray, 90)
+        array.push(rCols, c)
+
+if barstate.islast
+    array.clear(rNames), array.clear(rDirs), array.clear(rConfs), array.clear(rNotes), array.clear(rCols)
+
+    // Regime (only if obvious)
+    if regimeDir != 0
+        f_addRow("Regime", regimeDir > 0 ? "🟢" : "🔴", f_conf(70), regimeDir > 0 ? "Uptrend stacked" : "Downtrend stacked", true)
+    else if chop
+        f_addRow("Regime", "⚪", "Med", "Chop / balanced", true)
+    else if squeeze
+        f_addRow("Regime", "⚪", "Med", "Volatility squeeze", true)
+    else
+        f_addRow("Regime", "⚪", "Low", "Undefined", false)
+
+    // MTF
+    mtfNote = "5m:" + (mtf1Trend>0?"↑":mtf1Trend<0?"↓":"·") + " 15m:" + (mtf2Trend>0?"↑":mtf2Trend<0?"↓":"·") + " 1H:" + (mtf3Trend>0?"↑":mtf3Trend<0?"↓":"·")
+    f_addRow("MTF Align", mtfAlign>1?"🟢":mtfAlign<-1?"🔴":"⚪", f_conf(math.abs(mtfAlign)*33), mtfNote, math.abs(mtfAlign) >= 2)
+
+    // VWAP
+    vwapNote = "Dist " + str.tostring(vwapDist, "#.##") + " ATR"
+    f_addRow("VWAP", aboveVWAP?"🟢":"🔴", f_conf(math.min(100, int(math.abs(vwapDist)*40))), vwapNote, math.abs(vwapDist) > 0.3)
+    if vwapReclaim
+        f_addRow("VWAP Reclaim", "🟢", "High", "Cross above", true)
+    if vwapReject
+        f_addRow("VWAP Reject", "🔴", "High", "Cross below", true)
+
+    // RSI
+    rsiNote = "RSI " + str.tostring(rsi, "#.#")
+    if rsiOBnow
+        f_addRow("RSI", "🔴", "Med", rsiNote + " OB", true)
+    else if rsiOSnow
+        f_addRow("RSI", "🟢", "Med", rsiNote + " OS", true)
+    else
+        f_addRow("RSI", rsiBull?"🟢":"🔴", "Low", rsiNote, false)
+    if rsiDivBull
+        f_addRow("RSI Divergence", "🟢", "High", "Bull div vs price", true)
+    if rsiDivBear
+        f_addRow("RSI Divergence", "🔴", "High", "Bear div vs price", true)
+
+    // Delta divergence
+    if bullDeltaDiv
+        f_addRow("Δ Divergence", "🟢", "Med", "Price LL, delta higher (proxy)", true)
+    if bearDeltaDiv
+        f_addRow("Δ Divergence", "🔴", "Med", "Price HH, delta lower (proxy)", true)
+
+    // Absorption
+    if absorbSellers
+        f_addRow("Absorption", "🟢", "High", "Buyers absorbing supply", true)
+    if absorbBuyers
+        f_addRow("Absorption", "🔴", "High", "Sellers absorbing demand", true)
+
+    // Liquidity target
+    if liqNear
+        tgtSide = nearestTgt > close ? "🔴" : "🟢"
+        f_addRow("Liquidity Target", tgtSide, "Med", nearestName + " @ " + str.tostring(nearestTgt, format.mintick) + " (" + str.tostring(nearestDist/atr14, "#.##") + " ATR)", true)
+
+    // Equal highs/lows (resting liquidity)
+    if eqHighs
+        f_addRow("Resting Liq", "🔴", "Med", "Equal highs above", true)
+    if eqLows
+        f_addRow("Resting Liq", "🟢", "Med", "Equal lows below", true)
+
+    // Engineered liquidity (sweep + reversal)
+    if engLiqBull
+        f_addRow("Engineered Liq", "🟢", "High", "Swept eq-lows + reclaim", true)
+    if engLiqBear
+        f_addRow("Engineered Liq", "🔴", "High", "Swept eq-highs + rejection", true)
+
+    // Price action
+    if bullEngulf
+        f_addRow("PA Pattern", "🟢", "Med", "Bullish engulfing", true)
+    if bearEngulf
+        f_addRow("PA Pattern", "🔴", "Med", "Bearish engulfing", true)
+    if hammer
+        f_addRow("PA Pattern", "🟢", "Low", "Hammer / rejection wick", true)
+    if shooter
+        f_addRow("PA Pattern", "🔴", "Low", "Shooting star", true)
+    if insideBar
+        f_addRow("PA Pattern", "⚪", "Low", "Inside bar (compression)", false)
+
+    // AMD phase
+    if amdPhase != ""
+        amdSym = amdDir > 0 ? "🟢" : amdDir < 0 ? "🔴" : "⚪"
+        amdConf = str.contains(amdPhase, "Manipulation") or str.contains(amdPhase, "Distribution") ? "High" : "Med"
+        f_addRow("AMD Phase", amdSym, amdConf, amdPhase, true)
+
+    // Reversal / Continuation summary
+    if reversalBull
+        f_addRow("Setup", "🟢", "High", "Reversal long conditions", true)
+    if reversalBear
+        f_addRow("Setup", "🔴", "High", "Reversal short conditions", true)
+    if continuationBull
+        f_addRow("Setup", "🟢", "High", "Trend continuation long", true)
+    if continuationBear
+        f_addRow("Setup", "🔴", "High", "Trend continuation short", true)
+
+    // --------------------------------------------------------------------
+    // RENDER TABLE
+    // --------------------------------------------------------------------
+    table.clear(t, 0, 0, 3, 24)
+
+    hdrBg = color.new(color.black, 20)
+    hdrFg = color.white
+    fSize = f_size(tblSize)
+
+    // Bias summary row (optional top row)
+    rowIdx = 0
+    if showBiasBar
+        biasBg = biasDir > 0 ? color.new(color.green, 40) : biasDir < 0 ? color.new(color.red, 40) : color.new(color.gray, 60)
+        table.cell(t, 0, rowIdx, "BIAS", bgcolor=hdrBg, text_color=hdrFg, text_size=fSize)
+        table.cell(t, 1, rowIdx, biasTxt, bgcolor=biasBg, text_color=color.white, text_size=fSize)
+        table.cell(t, 2, rowIdx, f_conf(confPct) + " " + str.tostring(confPct) + "%", bgcolor=biasBg, text_color=color.white, text_size=fSize)
+        table.cell(t, 3, rowIdx, "Bull " + str.tostring(bullScore) + " / Bear " + str.tostring(bearScore), bgcolor=biasBg, text_color=color.white, text_size=fSize)
+        rowIdx += 1
+
+    // Column headers
+    table.cell(t, 0, rowIdx, "Signal",     bgcolor=hdrBg, text_color=hdrFg, text_size=fSize)
+    table.cell(t, 1, rowIdx, "Dir",        bgcolor=hdrBg, text_color=hdrFg, text_size=fSize)
+    table.cell(t, 2, rowIdx, "Conf",       bgcolor=hdrBg, text_color=hdrFg, text_size=fSize)
+    table.cell(t, 3, rowIdx, "Note",       bgcolor=hdrBg, text_color=hdrFg, text_size=fSize)
+    rowIdx += 1
+
+    // Data rows
+    nRows = math.min(array.size(rNames), maxRows)
+    if nRows == 0
+        table.cell(t, 0, rowIdx, "—", text_color=color.gray, text_size=fSize)
+        table.cell(t, 1, rowIdx, "",  text_color=color.gray, text_size=fSize)
+        table.cell(t, 2, rowIdx, "",  text_color=color.gray, text_size=fSize)
+        table.cell(t, 3, rowIdx, "No active signals", text_color=color.gray, text_size=fSize)
+    else
+        for i = 0 to nRows - 1
+            bg = array.get(rCols, i)
+            table.cell(t, 0, rowIdx, array.get(rNames, i), bgcolor=bg, text_color=color.white, text_size=fSize)
+            table.cell(t, 1, rowIdx, array.get(rDirs,  i), bgcolor=bg, text_color=color.white, text_size=fSize)
+            table.cell(t, 2, rowIdx, array.get(rConfs, i), bgcolor=bg, text_color=color.white, text_size=fSize)
+            table.cell(t, 3, rowIdx, array.get(rNotes, i), bgcolor=bg, text_color=color.white, text_size=fSize)
+            rowIdx += 1
+
+// ============================================================================
+// ALERTS (optional — fire on high-confluence setups)
+// ============================================================================
+alertcondition(reversalBull      and confPct >= 60, "Reversal Long",       "High-confluence reversal long")
+alertcondition(reversalBear      and confPct >= 60, "Reversal Short",      "High-confluence reversal short")
+alertcondition(continuationBull  and confPct >= 60, "Continuation Long",   "Trend continuation long")
+alertcondition(continuationBear  and confPct >= 60, "Continuation Short",  "Trend continuation short")
+alertcondition(engLiqBull, "Engineered Liq Long",  "Sell-side liquidity swept and reclaimed")
+alertcondition(engLiqBear, "Engineered Liq Short", "Buy-side liquidity swept and rejected")
+alertcondition(absorbSellers, "Absorption Bull", "Buyers absorbing supply")
+alertcondition(absorbBuyers,  "Absorption Bear", "Sellers absorbing demand")

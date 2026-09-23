@@ -1,4 +1,3 @@
-
 //@version=6
 indicator("Daily Key Levels", overlay=true, max_lines_count=500, max_labels_count=500)
 
@@ -13,12 +12,13 @@ showIBL = input.bool(true, "IBL (Initial Balance Low)", group="Display")
 showIBM = input.bool(true, "IBM (Initial Balance Middle)", group="Display")
 showORB30H = input.bool(true, "ORB-30 High", group="Display")
 showORB30L = input.bool(true, "ORB-30 Low", group="Display")
-showWMH = input.bool(true, "WMH (Weekly Model High)", group="Display")
-showWML = input.bool(true, "WML (Weekly Model Low)", group="Display")
 showOVH = input.bool(true, "OVH (Overnight High)", group="Display")
 showOVL = input.bool(true, "OVL (Overnight Low)", group="Display")
 showRTHO = input.bool(true, "Open (RTH)", group="Display")
 showIBConf = input.bool(true, "IB Combined Confluence", group="Display")
+showVWAP = input.bool(true, "RTH VWAP", group="Display")
+showEMA8 = input.bool(true, "EMA 8", group="Display")
+showEMA21 = input.bool(true, "EMA 21", group="Display")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
@@ -30,17 +30,29 @@ colorIBL = input.color(color.new(color.blue, 0), "IBL Color", group="Colors")
 colorIBM = input.color(color.new(color.blue, 60), "IBM Color", group="Colors")
 colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="Colors")
 colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
-colorWMH = input.color(color.new(color.yellow, 0), "WM High Color", group="Colors")
-colorWML = input.color(color.new(color.yellow, 0), "WM Low Color", group="Colors")
 colorOVH = input.color(color.new(color.orange, 0), "OVH Color", group="Colors")
 colorOVL = input.color(color.new(color.orange, 0), "OVL Color", group="Colors")
 colorRTHO = input.color(color.new(color.aqua, 0), "Open (RTH) Color", group="Colors")
 colorIBConfBull = input.color(color.new(color.lime, 0), "IB Confluence Bullish", group="Colors")
 colorIBConfBear = input.color(color.new(color.fuchsia, 0), "IB Confluence Bearish", group="Colors")
+colorVWAP = input.color(color.new(color.maroon, 0), "VWAP Color", group="Colors")
+colorEMA8 = input.color(color.new(color.white, 0), "EMA 8 Color", group="Colors")
+colorEMA21 = input.color(color.new(color.gray, 0), "EMA 21 Color", group="Colors")
 
 // Line Style & Width
 lineStyle = input.string(title="Line Style", defval="Dashed", options=["Solid", "Dashed", "Dotted"], group="Line Style")
 lineWidth = input.int(title="Line Width", defval=1, minval=1, maxval=4, group="Line Style")
+vwapLineStyle = input.string(title="VWAP Line Style", defval="Solid", options=["Solid", "Dashed", "Dotted"], group="Line Style")
+ema8LineStyle  = input.string(title="EMA 8 Line Style",  defval="Solid", options=["Solid", "Dashed", "Dotted"], group="Line Style")
+ema21LineStyle = input.string(title="EMA 21 Line Style", defval="Solid", options=["Solid", "Dashed", "Dotted"], group="Line Style")
+
+// Label position — plain-text floating labels above each level line.
+// Pulls the labels away from the line so they don't compete with price action.
+labelOffset     = input.int(5, "Label Offset (bars right of current)", minval=0, maxval=50, group="Labels")
+labelTicksAbove = input.int(4, "Label Vertical Offset (ticks above line)", minval=0, maxval=50, group="Labels")
+labelSize       = input.string("Normal", "Label Font Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="Labels")
+labelX          = bar_index + labelOffset
+tickOffset      = syminfo.mintick * labelTicksAbove
 
 getLineStyle() =>
     switch lineStyle
@@ -48,10 +60,40 @@ getLineStyle() =>
         "Dashed" => line.style_dashed
         "Dotted" => line.style_dotted
 
+getVwapLineStyle() =>
+    switch vwapLineStyle
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+
+getEma8LineStyle() =>
+    switch ema8LineStyle
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+
+getEma21LineStyle() =>
+    switch ema21LineStyle
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+
+getLabelSize() =>
+    switch labelSize
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+
 // ===== TIME VARIABLES (DEFINED ONCE) =====
 hourET = hour(time, "America/New_York")
 minuteET = minute(time, "America/New_York")
-newDay = ta.change(dayofmonth) != 0
+// Rising edge of the 18:00 ET bar → Globex open. PDH/PDL resets here using
+// the RTH session that just closed at 16:00 ET. Works across timeframes
+// (1m, 5m, 1H, etc.) because it detects the transition, not a flat match.
+is1800     = hourET == 18 and minuteET == 0
+globexOpen = is1800 and not is1800[1] // ↑ fallback to false on first bar
 
 // Session definitions
 inRTH = (hourET == 9 and minuteET >= 30) or (hourET > 9 and hourET < 16) or (hourET == 16 and minuteET == 0)
@@ -64,14 +106,21 @@ orb30Display = inRTH and ((hourET == 10 and minuteET >= 0 and minuteET < 30))
 // IB display: only after 10:30am
 ibDisplay = inRTH and ((hourET == 10 and minuteET >= 30) or (hourET > 10) or (hourET == 16 and minuteET == 0))
 
-// ===== CALCULATE PREVIOUS DAY HIGH/LOW (RTH ONLY) =====
+// Overnight window: 9:00pm ET to 9:29am ET (Globex/Asian/London/premarket)
+inOvernightWindow = (hourET >= 21) or (hourET < 9) or (hourET == 9 and minuteET < 30)
+
+// ===== CALCULATE PREVIOUS DAY HIGH/LOW =====
+// PDH/PDL = today's RTH range (9:30–16:00 ET), snapshotted at 18:00 ET
+// (Globex open). At the Globex-open bar, rthHigh/rthLow still hold the
+// just-completed RTH range — they aren't touched again until the next
+// RTH session begins, so the snapshot captures the correct values.
 var float rthOpen = na
 var float rthHigh = na
 var float rthLow = na
 var float pdh = na
 var float pdl = na
 
-if newDay and not na(rthHigh)
+if globexOpen and not na(rthHigh)
     pdh := rthHigh
     pdl := rthLow
     rthOpen := na
@@ -191,28 +240,6 @@ if inOrb30Window
 if not inOrb30Window and inOrb30Window[1] and not na(orb30High)
     orb30Formed := true
 
-// ===== CALCULATE WEEKLY MODEL (Sun 18:00 ET - Tue 16:00 ET) =====
-var float wmHigh = na
-var float wmLow = na
-dowET = dayofweek(time, "America/New_York")
-inWMWindow = (dowET == 1 and hourET >= 18) or dowET == 2 or (dowET == 3 and (hourET < 16 or (hourET == 16 and minuteET == 0)))
-wmDisplay = (dowET >= 4 and dowET <= 6) and inRTH
-
-// Overnight window: 9:00pm ET to 9:29am ET (Globex/Asian/London/premarket)
-inOvernightWindow = (hourET >= 21) or (hourET < 9) or (hourET == 9 and minuteET < 30)
-
-if inWMWindow and not inWMWindow[1]
-    wmHigh := na
-    wmLow := na
-
-if inWMWindow
-    if na(wmHigh)
-        wmHigh := high
-        wmLow := low
-    else
-        wmHigh := math.max(wmHigh, high)
-        wmLow := math.min(wmLow, low)
-
 // ===== CALCULATE OVERNIGHT HIGH/LOW (9:00pm - 9:29am ET) =====
 var float ovh = na
 var float ovl = na
@@ -229,6 +256,81 @@ if inOvernightWindow
         ovh := math.max(ovh, high)
         ovl := math.min(ovl, low)
 
+// ===== RTH VWAP =====
+// Custom VWAP reset on RTH open. Accumulates hlc3*volume and volume across
+// the session, then divides. Reset fires on the first RTH bar; subsequent
+// RTH bars accumulate. Outside RTH the line is hidden (inRTH gate).
+var float cumPV  = 0.0
+var float cumVol = 0.0
+if inRTH and not inRTH[1]
+    cumPV  := 0.0
+    cumVol := 0.0
+if inRTH
+    cumPV  += volume * hlc3
+    cumVol += volume
+float rthVwap = cumVol != 0 ? cumPV / cumVol : na
+
+// ===== EMA 8 / EMA 21 =====
+float ema8  = ta.ema(close, 8)
+float ema21 = ta.ema(close, 21)
+
+// ===== MOVING-AVERAGE CURVES (continuous polylines) =====
+// RTH VWAP / EMA 8 / EMA 21 follow their per-bar value like a moving average,
+// NOT a rigid horizontal ray like the static levels below. We accumulate
+// chart.points and rebuild one polyline per bar so style changes apply
+// immediately. The buffer is capped at 500 points to bound memory and the
+// polyline is rebuilt from the buffer every bar (delete → create).
+var polyline polyVwap = na
+var chart.point[] vwapPts = array.new<chart.point>(0)
+
+if showVWAP
+    if inRTH
+        if not inRTH[1]
+            array.clear(vwapPts)              // RTH open → drop prior session
+        if not na(rthVwap)
+            array.push(vwapPts, chart.point.from_index(bar_index, rthVwap))
+        while array.size(vwapPts) > 500
+            array.shift(vwapPts)
+        polyline.delete(polyVwap)
+        if array.size(vwapPts) >= 2
+            polyVwap := polyline.new(vwapPts, xloc=xloc.bar_index, line_color=colorVWAP, line_width=lineWidth, line_style=getVwapLineStyle())
+    else
+        polyline.delete(polyVwap)             // hide off-hours
+        array.clear(vwapPts)
+else
+    polyline.delete(polyVwap)
+    array.clear(vwapPts)
+
+var polyline polyEma8 = na
+var chart.point[] ema8Pts = array.new<chart.point>(0)
+
+if showEMA8
+    if not na(ema8)
+        array.push(ema8Pts, chart.point.from_index(bar_index, ema8))
+    while array.size(ema8Pts) > 500
+        array.shift(ema8Pts)
+    polyline.delete(polyEma8)
+    if array.size(ema8Pts) >= 2
+        polyEma8 := polyline.new(ema8Pts, xloc=xloc.bar_index, line_color=colorEMA8, line_width=lineWidth, line_style=getEma8LineStyle())
+else
+    polyline.delete(polyEma8)
+    array.clear(ema8Pts)
+
+var polyline polyEma21 = na
+var chart.point[] ema21Pts = array.new<chart.point>(0)
+
+if showEMA21
+    if not na(ema21)
+        array.push(ema21Pts, chart.point.from_index(bar_index, ema21))
+    while array.size(ema21Pts) > 500
+        array.shift(ema21Pts)
+    polyline.delete(polyEma21)
+    if array.size(ema21Pts) >= 2
+        polyEma21 := polyline.new(ema21Pts, xloc=xloc.bar_index, line_color=colorEMA21, line_width=lineWidth, line_style=getEma21LineStyle())
+else
+    polyline.delete(polyEma21)
+    array.clear(ema21Pts)
+
 // ===== PLOT LEVELS AS RAYS =====
 var line linePDH = na
 var line linePDL = na
@@ -239,8 +341,6 @@ var line lineIBL = na
 var line lineIBM = na
 var line lineORB30H = na
 var line lineORB30L = na
-var line lineWMH = na
-var line lineWML = na
 var line lineOVH = na
 var line lineOVL = na
 var line lineRTHO = na
@@ -283,14 +383,6 @@ if barstate.islast
         line.delete(lineORB30L)
         lineORB30L := line.new(startBar, orb30Low, bar_index, orb30Low, color=colorORB30L, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
-    // Weekly Model levels (display Wed-Fri during RTH)
-    if showWMH and wmDisplay and not na(wmHigh)
-        line.delete(lineWMH)
-        lineWMH := line.new(startBar, wmHigh, bar_index, wmHigh, color=colorWMH, width=lineWidth, style=getLineStyle(), extend=extend.right)
-    if showWML and wmDisplay and not na(wmLow)
-        line.delete(lineWML)
-        lineWML := line.new(startBar, wmLow, bar_index, wmLow, color=colorWML, width=lineWidth, style=getLineStyle(), extend=extend.right)
-
     // Overnight High/Low levels (display only during RTH 9:30-16:00)
     if showOVH and inRTH and not na(ovh)
         line.delete(lineOVH)
@@ -304,8 +396,11 @@ if barstate.islast
         line.delete(lineRTHO)
         lineRTHO := line.new(startBar, rthOpen, bar_index, rthOpen, color=colorRTHO, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
+    // RTH VWAP / EMA 8 / EMA 21 are drawn as continuous polylines (see
+    // "MOVING-AVERAGE CURVES" section above) so they aren't rendered here.
+
 // ===== IB CONFLUENCE VISUAL CUE =====
-// Show a marker at the probable break level when dual confluence fires
+// Plain-text marker at the probable break level when dual confluence fires
 var label labelIBConfBull = na
 var label labelIBConfBear = na
 
@@ -326,11 +421,11 @@ if barstate.islast
                  "Look for 40-60% pullback\n" +
                  "into unmitigated leg for\n" +
                  "long entry to IBH target"
-            labelIBConfBull := label.new(bar_index + 3, ibHigh, "⬆ IB\nDUAL",
-                 style=label.style_label_down,
-                 color=colorIBConfBull,
-                 textcolor=color.black,
-                 size=size.normal,
+            labelIBConfBull := label.new(labelX, ibHigh + tickOffset, "⬆ IB\nDUAL",
+                 style=label.style_none,
+                 color=color.new(color.white, 100),
+                 textcolor=colorIBConfBull,
+                 size=getLabelSize(),
                  tooltip=tip)
 
         if ibConfBear and not na(ibLow)
@@ -345,14 +440,17 @@ if barstate.islast
                  "Look for 40-60% pullback\n" +
                  "into unmitigated leg for\n" +
                  "short entry to IBL target"
-            labelIBConfBear := label.new(bar_index + 3, ibLow, "⬇ IB\nDUAL",
-                 style=label.style_label_up,
-                 color=colorIBConfBear,
-                 textcolor=color.black,
-                 size=size.normal,
+            labelIBConfBear := label.new(labelX, ibLow + tickOffset, "⬇ IB\nDUAL",
+                 style=label.style_none,
+                 color=color.new(color.white, 100),
+                 textcolor=colorIBConfBear,
+                 size=getLabelSize(),
                  tooltip=tip)
 
 // ===== LABELS =====
+// Plain-text floating labels above each level line. Configurable x-offset
+// (bars right of current bar) and y-offset (ticks above the line) keep the
+// labels out of the way of price action at the level.
 var label labelPDH = na
 var label labelPDL = na
 var label labelPWH = na
@@ -362,8 +460,6 @@ var label labelIBL = na
 var label labelIBM = na
 var label labelORB30H = na
 var label labelORB30L = na
-var label labelWMH = na
-var label labelWML = na
 var label labelOVH = na
 var label labelOVL = na
 var label labelRTHO = na
@@ -372,59 +468,51 @@ if barstate.islast
     // Previous Day labels
     if showPDH and not na(pdh)
         label.delete(labelPDH)
-        labelPDH := label.new(bar_index, pdh, "PDH", style=label.style_label_down, color=colorPDH, textcolor=color.white, size=size.normal)
+        labelPDH := label.new(labelX, pdh + tickOffset, "PDH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorPDH, size=getLabelSize())
     if showPDL and not na(pdl)
         label.delete(labelPDL)
-        labelPDL := label.new(bar_index, pdl, "PDL", style=label.style_label_down, color=colorPDL, textcolor=color.white, size=size.normal)
+        labelPDL := label.new(labelX, pdl + tickOffset, "PDL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorPDL, size=getLabelSize())
 
     // Previous Week labels
     if showPWH and not na(pwh)
         label.delete(labelPWH)
-        labelPWH := label.new(bar_index, pwh, "PWH", style=label.style_label_down, color=colorPWH, textcolor=color.white, size=size.normal)
+        labelPWH := label.new(labelX, pwh + tickOffset, "PWH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorPWH, size=getLabelSize())
     if showPWL and not na(pwl)
         label.delete(labelPWL)
-        labelPWL := label.new(bar_index, pwl, "PWL", style=label.style_label_down, color=colorPWL, textcolor=color.white, size=size.normal)
+        labelPWL := label.new(labelX, pwl + tickOffset, "PWL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorPWL, size=getLabelSize())
 
     // IB labels (only display from 10:30am onwards)
     if showIBH and ibDisplay and not na(ibHigh)
         label.delete(labelIBH)
-        labelIBH := label.new(bar_index, ibHigh, "IBH", style=label.style_label_down, color=colorIBH, textcolor=color.white, size=size.normal)
+        labelIBH := label.new(labelX, ibHigh + tickOffset, "IBH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorIBH, size=getLabelSize())
     if showIBL and ibDisplay and not na(ibLow)
         label.delete(labelIBL)
-        labelIBL := label.new(bar_index, ibLow, "IBL", style=label.style_label_down, color=colorIBL, textcolor=color.white, size=size.normal)
+        labelIBL := label.new(labelX, ibLow + tickOffset, "IBL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorIBL, size=getLabelSize())
     if showIBM and ibDisplay and not na(ibMid)
         label.delete(labelIBM)
-        labelIBM := label.new(bar_index, ibMid, "IBM", style=label.style_label_down, color=colorIBM, textcolor=color.white, size=size.normal)
+        labelIBM := label.new(labelX, ibMid + tickOffset, "IBM", style=label.style_none, color=color.new(color.white, 100), textcolor=colorIBM, size=getLabelSize())
 
     // ORB-30 labels (display from 10:00 to 10:29)
     if showORB30H and orb30Display and orb30Formed and not na(orb30High)
         label.delete(labelORB30H)
-        labelORB30H := label.new(bar_index, orb30High, "ORB-30-H", style=label.style_label_down, color=colorORB30H, textcolor=color.white, size=size.normal)
+        labelORB30H := label.new(labelX, orb30High + tickOffset, "ORB-30-H", style=label.style_none, color=color.new(color.white, 100), textcolor=colorORB30H, size=getLabelSize())
     if showORB30L and orb30Display and orb30Formed and not na(orb30Low)
         label.delete(labelORB30L)
-        labelORB30L := label.new(bar_index, orb30Low, "ORB-30-L", style=label.style_label_down, color=colorORB30L, textcolor=color.white, size=size.normal)
-
-    // Weekly Model labels (display Wed-Fri during RTH)
-    if showWMH and wmDisplay and not na(wmHigh)
-        label.delete(labelWMH)
-        labelWMH := label.new(bar_index, wmHigh, "WMH", style=label.style_label_down, color=colorWMH, textcolor=color.white, size=size.normal)
-    if showWML and wmDisplay and not na(wmLow)
-        label.delete(labelWML)
-        labelWML := label.new(bar_index, wmLow, "WML", style=label.style_label_down, color=colorWML, textcolor=color.white, size=size.normal)
+        labelORB30L := label.new(labelX, orb30Low + tickOffset, "ORB-30-L", style=label.style_none, color=color.new(color.white, 100), textcolor=colorORB30L, size=getLabelSize())
 
     // Overnight High/Low labels (display only during RTH 9:30-16:00)
     if showOVH and inRTH and not na(ovh)
         label.delete(labelOVH)
-        labelOVH := label.new(bar_index, ovh, "OVH", style=label.style_label_down, color=colorOVH, textcolor=color.white, size=size.normal)
+        labelOVH := label.new(labelX, ovh + tickOffset, "OVH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorOVH, size=getLabelSize())
 
     if showOVL and inRTH and not na(ovl)
         label.delete(labelOVL)
-        labelOVL := label.new(bar_index, ovl, "OVL", style=label.style_label_down, color=colorOVL, textcolor=color.white, size=size.normal)
+        labelOVL := label.new(labelX, ovl + tickOffset, "OVL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorOVL, size=getLabelSize())
 
     // Open (RTH) label (display only during RTH 9:30-16:00)
     if showRTHO and inRTH and not na(rthOpen)
         label.delete(labelRTHO)
-        labelRTHO := label.new(bar_index, rthOpen, "Open", style=label.style_label_down, color=colorRTHO, textcolor=color.white, size=size.normal)
+        labelRTHO := label.new(labelX, rthOpen + tickOffset, "Open", style=label.style_none, color=color.new(color.white, 100), textcolor=colorRTHO, size=getLabelSize())
 
 // ===== IB CONFLUENCE ALERT =====
 alertcondition(ibConfBull and ibDisplay and not ibDisplay[1], "IB Dual Confluence → High Break", "IB dual confluence: expect HIGH break (~74% pre-noon, ~84% pre-close)")
