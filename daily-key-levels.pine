@@ -1,6 +1,7 @@
 //@version=6
 indicator("Daily Key Levels", overlay=true, max_lines_count=500, max_labels_count=500)
 
+
 // ===== INPUTS =====
 // Display toggles — individual level on/off
 showPDH = input.bool(true, "PDH (Previous Day High)", group="Display")
@@ -12,13 +13,24 @@ showIBL = input.bool(true, "IBL (Initial Balance Low)", group="Display")
 showIBM = input.bool(true, "IBM (Initial Balance Middle)", group="Display")
 showORB30H = input.bool(true, "ORB-30 High", group="Display")
 showORB30L = input.bool(true, "ORB-30 Low", group="Display")
-showOVH = input.bool(true, "OVH (Overnight High)", group="Display")
-showOVL = input.bool(true, "OVL (Overnight Low)", group="Display")
+showAsiaH = input.bool(true, "Asia High", group="Display")
+showAsiaL = input.bool(true, "Asia Low", group="Display")
+showLondonH = input.bool(true, "London High", group="Display")
+showLondonL = input.bool(true, "London Low", group="Display")
 showRTHO = input.bool(true, "Open (RTH)", group="Display")
 showIBConf = input.bool(true, "IB Combined Confluence", group="Display")
 showVWAP = input.bool(true, "RTH VWAP", group="Display")
 showEMA8 = input.bool(true, "EMA 8", group="Display")
+
 showEMA21 = input.bool(true, "EMA 21", group="Display")
+
+// Sessions (ET). Asia high/low finalize at London open; London high/low
+// finalize when the London session ends.
+asiaSession   = input.session("2000-0300:1234567", "Asia Session (ET)", group="Sessions")
+londonSession = input.session("0300-0800:1234567", "London Session (ET)", group="Sessions")
+// Hide Asia/London levels once price has traded through them after the
+// session that formed them has closed.
+hideSwept = input.bool(true, "Hide Levels Once Swept", group="Sessions")
 
 // Colors
 colorPDH = input.color(color.new(color.red, 0), "PDH Color", group="Colors")
@@ -30,8 +42,10 @@ colorIBL = input.color(color.new(color.blue, 0), "IBL Color", group="Colors")
 colorIBM = input.color(color.new(color.blue, 60), "IBM Color", group="Colors")
 colorORB30H = input.color(color.new(color.teal, 0), "ORB-30 High Color", group="Colors")
 colorORB30L = input.color(color.new(color.teal, 0), "ORB-30 Low Color", group="Colors")
-colorOVH = input.color(color.new(color.orange, 0), "OVH Color", group="Colors")
-colorOVL = input.color(color.new(color.orange, 0), "OVL Color", group="Colors")
+colorAsiaH = input.color(color.new(color.orange, 0), "Asia High Color", group="Colors")
+colorAsiaL = input.color(color.new(color.orange, 0), "Asia Low Color", group="Colors")
+colorLondonH = input.color(color.new(color.yellow, 0), "London High Color", group="Colors")
+colorLondonL = input.color(color.new(color.yellow, 0), "London Low Color", group="Colors")
 colorRTHO = input.color(color.new(color.aqua, 0), "Open (RTH) Color", group="Colors")
 colorIBConfBull = input.color(color.new(color.lime, 0), "IB Confluence Bullish", group="Colors")
 colorIBConfBear = input.color(color.new(color.fuchsia, 0), "IB Confluence Bearish", group="Colors")
@@ -61,6 +75,7 @@ getLineStyle() =>
         "Dotted" => line.style_dotted
 
 getVwapLineStyle() =>
+
     switch vwapLineStyle
         "Solid"  => line.style_solid
         "Dashed" => line.style_dashed
@@ -76,7 +91,9 @@ getEma21LineStyle() =>
     switch ema21LineStyle
         "Solid"  => line.style_solid
         "Dashed" => line.style_dashed
+
         "Dotted" => line.style_dotted
+
 
 getLabelSize() =>
     switch labelSize
@@ -96,6 +113,7 @@ is1800     = hourET == 18 and minuteET == 0
 globexOpen = is1800 and not is1800[1] // ↑ fallback to false on first bar
 
 // Session definitions
+
 inRTH = (hourET == 9 and minuteET >= 30) or (hourET > 9 and hourET < 16) or (hourET == 16 and minuteET == 0)
 inIB = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and minuteET < 30))
 
@@ -104,10 +122,12 @@ inOrb30Window = inRTH and ((hourET == 9 and minuteET >= 30) or (hourET == 10 and
 orb30Display = inRTH and ((hourET == 10 and minuteET >= 0 and minuteET < 30))
 
 // IB display: only after 10:30am
+
 ibDisplay = inRTH and ((hourET == 10 and minuteET >= 30) or (hourET > 10) or (hourET == 16 and minuteET == 0))
 
-// Overnight window: 9:00pm ET to 9:29am ET (Globex/Asian/London/premarket)
-inOvernightWindow = (hourET >= 21) or (hourET < 9) or (hourET == 9 and minuteET < 30)
+// Asia / London sessions (session strings respect the ET timezone and DST)
+asiaActive   = not na(time(timeframe.period, asiaSession, "America/New_York"))
+londonActive = not na(time(timeframe.period, londonSession, "America/New_York"))
 
 // ===== CALCULATE PREVIOUS DAY HIGH/LOW =====
 // PDH/PDL = today's RTH range (9:30–16:00 ET), snapshotted at 18:00 ET
@@ -124,6 +144,7 @@ if globexOpen and not na(rthHigh)
     pdh := rthHigh
     pdl := rthLow
     rthOpen := na
+
     rthHigh := na
     rthLow := na
 
@@ -146,6 +167,7 @@ var float ibLow = na
 
 // Reset IB at start of RTH session
 if inRTH and not inRTH[1]
+
     ibHigh := na
     ibLow := na
 
@@ -166,6 +188,7 @@ var float ibClosePrice = na      // close price of the last bar in IB (10:29 bar
 var float ibMid        = na      // midpoint of IB range — shared by confluence logic and IBM plot
 var bool  ibConfBull   = false   // dual confluence → expect high break
 var bool  ibConfBear   = false   // dual confluence → expect low break
+
 var bool  ibConfSet    = false   // true once IB closes and confluence is evaluated
 var string ibConfMidLabel = ""   // for tooltip detail
 var string ibConfHLLabel  = ""   // for tooltip detail
@@ -204,6 +227,7 @@ if ibDisplay and not ibDisplay[1] and not na(ibHigh) and not na(ibLow) and not n
     bool closedAboveMid = ibClosePrice > ibMid
     bool closedBelowMid = ibClosePrice < ibMid
 
+
     // Confluence 2 — HL Order: which extreme was set last?
     bool lowFirstHighLast = ibHighBar > ibLowBar   // high was set AFTER low → bullish
     bool highFirstLowLast = ibLowBar > ibHighBar    // low was set AFTER high → bearish
@@ -237,24 +261,70 @@ if inOrb30Window
         orb30Low := math.min(orb30Low, low)
 
 // Mark ORB-30 as formed when window ends
+
 if not inOrb30Window and inOrb30Window[1] and not na(orb30High)
     orb30Formed := true
 
-// ===== CALCULATE OVERNIGHT HIGH/LOW (9:00pm - 9:29am ET) =====
-var float ovh = na
-var float ovl = na
 
-if inOvernightWindow and not inOvernightWindow[1]
-    ovh := na
-    ovl := na
+// ===== CALCULATE ASIA / LONDON HIGH-LOW =====
+// Asia high/low finalize at London open; London high/low finalize when the
+// London session ends. A level is considered swept once price trades through
+// it after its own session has closed (London open onward for Asia levels,
+// London close onward — pre-market / RTH — for London levels).
+var float asiaHigh = na
+var float asiaLow  = na
+var bool  asiaHighSwept = false
+var bool  asiaLowSwept  = false
+var float londonHigh = na
+var float londonLow  = na
+var bool  londonHighSwept = false
+var bool  londonLowSwept  = false
 
-if inOvernightWindow
-    if na(ovh)
-        ovh := high
-        ovl := low
+if asiaActive and not asiaActive[1]
+    asiaHigh := na
+    asiaLow  := na
+    asiaHighSwept := false
+    asiaLowSwept  := false
+
+if asiaActive
+    if na(asiaHigh)
+        asiaHigh := high
+        asiaLow  := low
     else
-        ovh := math.max(ovh, high)
-        ovl := math.min(ovl, low)
+        asiaHigh := math.max(asiaHigh, high)
+        asiaLow  := math.min(asiaLow, low)
+
+if londonActive and not londonActive[1]
+    londonHigh := na
+    londonLow  := na
+    londonHighSwept := false
+    londonLowSwept  := false
+
+if londonActive
+    if na(londonHigh)
+        londonHigh := high
+        londonLow  := low
+    else
+        londonHigh := math.max(londonHigh, high)
+        londonLow  := math.min(londonLow, low)
+
+// Sweep tracking — Asia levels from London open onward, London levels from
+// London close onward.
+if not asiaActive and not na(asiaHigh)
+    if high > asiaHigh
+        asiaHighSwept := true
+    if low < asiaLow
+        asiaLowSwept := true
+
+if not asiaActive and not londonActive and not na(londonHigh)
+    if high > londonHigh
+        londonHighSwept := true
+    if low < londonLow
+        londonLowSwept := true
+
+// Display window — from Asia close (London open) through the RTH close.
+asiaDisplay   = not asiaActive and hourET < 16
+londonDisplay = not asiaActive and not londonActive and hourET < 16
 
 // ===== RTH VWAP =====
 // Custom VWAP reset on RTH open. Accumulates hlc3*volume and volume across
@@ -270,9 +340,11 @@ if inRTH
     cumVol += volume
 float rthVwap = cumVol != 0 ? cumPV / cumVol : na
 
+
 // ===== EMA 8 / EMA 21 =====
 float ema8  = ta.ema(close, 8)
 float ema21 = ta.ema(close, 21)
+
 
 // ===== MOVING-AVERAGE CURVES (continuous polylines) =====
 // RTH VWAP / EMA 8 / EMA 21 follow their per-bar value like a moving average,
@@ -289,6 +361,7 @@ if showVWAP
             array.clear(vwapPts)              // RTH open → drop prior session
         if not na(rthVwap)
             array.push(vwapPts, chart.point.from_index(bar_index, rthVwap))
+
         while array.size(vwapPts) > 500
             array.shift(vwapPts)
         polyline.delete(polyVwap)
@@ -319,6 +392,7 @@ else
 var polyline polyEma21 = na
 var chart.point[] ema21Pts = array.new<chart.point>(0)
 
+
 if showEMA21
     if not na(ema21)
         array.push(ema21Pts, chart.point.from_index(bar_index, ema21))
@@ -331,6 +405,7 @@ else
     polyline.delete(polyEma21)
     array.clear(ema21Pts)
 
+
 // ===== PLOT LEVELS AS RAYS =====
 var line linePDH = na
 var line linePDL = na
@@ -341,8 +416,10 @@ var line lineIBL = na
 var line lineIBM = na
 var line lineORB30H = na
 var line lineORB30L = na
-var line lineOVH = na
-var line lineOVL = na
+var line lineAsiaH = na
+var line lineAsiaL = na
+var line lineLondonH = na
+var line lineLondonL = na
 var line lineRTHO = na
 
 if barstate.islast
@@ -350,11 +427,13 @@ if barstate.islast
 
     // Previous Day levels
     if showPDH and not na(pdh)
+
         line.delete(linePDH)
         linePDH := line.new(startBar, pdh, bar_index, pdh, color=colorPDH, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showPDL and not na(pdl)
         line.delete(linePDL)
         linePDL := line.new(startBar, pdl, bar_index, pdl, color=colorPDL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+
 
     // Previous Week levels
     if showPWH and not na(pwh)
@@ -362,9 +441,11 @@ if barstate.islast
         linePWH := line.new(startBar, pwh, bar_index, pwh, color=colorPWH, width=lineWidth, style=getLineStyle(), extend=extend.right)
     if showPWL and not na(pwl)
         line.delete(linePWL)
+
         linePWL := line.new(startBar, pwl, bar_index, pwl, color=colorPWL, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
     // IB levels (only display from 10:30am onwards)
+
     if showIBH and ibDisplay and not na(ibHigh)
         line.delete(lineIBH)
         lineIBH := line.new(startBar, ibHigh, bar_index, ibHigh, color=colorIBH, width=lineWidth, style=getLineStyle(), extend=extend.right)
@@ -383,13 +464,32 @@ if barstate.islast
         line.delete(lineORB30L)
         lineORB30L := line.new(startBar, orb30Low, bar_index, orb30Low, color=colorORB30L, width=lineWidth, style=getLineStyle(), extend=extend.right)
 
-    // Overnight High/Low levels (display only during RTH 9:30-16:00)
-    if showOVH and inRTH and not na(ovh)
-        line.delete(lineOVH)
-        lineOVH := line.new(startBar, ovh, bar_index, ovh, color=colorOVH, width=lineWidth, style=getLineStyle(), extend=extend.right)
-    if showOVL and inRTH and not na(ovl)
-        line.delete(lineOVL)
-        lineOVL := line.new(startBar, ovl, bar_index, ovl, color=colorOVL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    // Asia / London levels (London open → RTH close; swept levels hidden)
+    if showAsiaH and asiaDisplay and not na(asiaHigh) and not (hideSwept and asiaHighSwept)
+        line.delete(lineAsiaH)
+        lineAsiaH := line.new(startBar, asiaHigh, bar_index, asiaHigh, color=colorAsiaH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    else
+        line.delete(lineAsiaH)
+        lineAsiaH := na
+    if showAsiaL and asiaDisplay and not na(asiaLow) and not (hideSwept and asiaLowSwept)
+        line.delete(lineAsiaL)
+        lineAsiaL := line.new(startBar, asiaLow, bar_index, asiaLow, color=colorAsiaL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    else
+        line.delete(lineAsiaL)
+        lineAsiaL := na
+
+    if showLondonH and londonDisplay and not na(londonHigh) and not (hideSwept and londonHighSwept)
+        line.delete(lineLondonH)
+        lineLondonH := line.new(startBar, londonHigh, bar_index, londonHigh, color=colorLondonH, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    else
+        line.delete(lineLondonH)
+        lineLondonH := na
+    if showLondonL and londonDisplay and not na(londonLow) and not (hideSwept and londonLowSwept)
+        line.delete(lineLondonL)
+        lineLondonL := line.new(startBar, londonLow, bar_index, londonLow, color=colorLondonL, width=lineWidth, style=getLineStyle(), extend=extend.right)
+    else
+        line.delete(lineLondonL)
+        lineLondonL := na
 
     // Open (RTH) (display only during RTH 9:30-16:00)
     if showRTHO and inRTH and not na(rthOpen)
@@ -402,6 +502,7 @@ if barstate.islast
 // ===== IB CONFLUENCE VISUAL CUE =====
 // Plain-text marker at the probable break level when dual confluence fires
 var label labelIBConfBull = na
+
 var label labelIBConfBear = na
 
 if barstate.islast
@@ -437,6 +538,7 @@ if barstate.islast
                  "~74% break before noon\n" +
                  "~84% break before 4pm\n" +
                  "─────────────────────────\n" +
+
                  "Look for 40-60% pullback\n" +
                  "into unmitigated leg for\n" +
                  "short entry to IBL target"
@@ -458,15 +560,19 @@ var label labelPWL = na
 var label labelIBH = na
 var label labelIBL = na
 var label labelIBM = na
+
 var label labelORB30H = na
 var label labelORB30L = na
-var label labelOVH = na
-var label labelOVL = na
+var label labelAsiaH = na
+var label labelAsiaL = na
+var label labelLondonH = na
+var label labelLondonL = na
 var label labelRTHO = na
 
 if barstate.islast
     // Previous Day labels
     if showPDH and not na(pdh)
+
         label.delete(labelPDH)
         labelPDH := label.new(labelX, pdh + tickOffset, "PDH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorPDH, size=getLabelSize())
     if showPDL and not na(pdl)
@@ -482,10 +588,12 @@ if barstate.islast
         labelPWL := label.new(labelX, pwl + tickOffset, "PWL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorPWL, size=getLabelSize())
 
     // IB labels (only display from 10:30am onwards)
+
     if showIBH and ibDisplay and not na(ibHigh)
         label.delete(labelIBH)
         labelIBH := label.new(labelX, ibHigh + tickOffset, "IBH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorIBH, size=getLabelSize())
     if showIBL and ibDisplay and not na(ibLow)
+
         label.delete(labelIBL)
         labelIBL := label.new(labelX, ibLow + tickOffset, "IBL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorIBL, size=getLabelSize())
     if showIBM and ibDisplay and not na(ibMid)
@@ -500,14 +608,32 @@ if barstate.islast
         label.delete(labelORB30L)
         labelORB30L := label.new(labelX, orb30Low + tickOffset, "ORB-30-L", style=label.style_none, color=color.new(color.white, 100), textcolor=colorORB30L, size=getLabelSize())
 
-    // Overnight High/Low labels (display only during RTH 9:30-16:00)
-    if showOVH and inRTH and not na(ovh)
-        label.delete(labelOVH)
-        labelOVH := label.new(labelX, ovh + tickOffset, "OVH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorOVH, size=getLabelSize())
+    // Asia / London labels (hidden together with their swept lines)
+    if showAsiaH and asiaDisplay and not na(asiaHigh) and not (hideSwept and asiaHighSwept)
+        label.delete(labelAsiaH)
+        labelAsiaH := label.new(labelX, asiaHigh + tickOffset, "AH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorAsiaH, size=getLabelSize())
+    else
+        label.delete(labelAsiaH)
+        labelAsiaH := na
+    if showAsiaL and asiaDisplay and not na(asiaLow) and not (hideSwept and asiaLowSwept)
+        label.delete(labelAsiaL)
+        labelAsiaL := label.new(labelX, asiaLow + tickOffset, "AL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorAsiaL, size=getLabelSize())
+    else
+        label.delete(labelAsiaL)
+        labelAsiaL := na
 
-    if showOVL and inRTH and not na(ovl)
-        label.delete(labelOVL)
-        labelOVL := label.new(labelX, ovl + tickOffset, "OVL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorOVL, size=getLabelSize())
+    if showLondonH and londonDisplay and not na(londonHigh) and not (hideSwept and londonHighSwept)
+        label.delete(labelLondonH)
+        labelLondonH := label.new(labelX, londonHigh + tickOffset, "LH", style=label.style_none, color=color.new(color.white, 100), textcolor=colorLondonH, size=getLabelSize())
+    else
+        label.delete(labelLondonH)
+        labelLondonH := na
+    if showLondonL and londonDisplay and not na(londonLow) and not (hideSwept and londonLowSwept)
+        label.delete(labelLondonL)
+        labelLondonL := label.new(labelX, londonLow + tickOffset, "LL", style=label.style_none, color=color.new(color.white, 100), textcolor=colorLondonL, size=getLabelSize())
+    else
+        label.delete(labelLondonL)
+        labelLondonL := na
 
     // Open (RTH) label (display only during RTH 9:30-16:00)
     if showRTHO and inRTH and not na(rthOpen)
